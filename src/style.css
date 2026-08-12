@@ -1,0 +1,32 @@
+@import 'tailwindcss';
+
+/* Lets `dark:` utilities key off our data-theme attribute instead of Tailwind's
+   default prefers-color-scheme strategy, matching src/composables/useTheme.js. */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* Design tokens. Registering these in @theme makes Tailwind generate real
+   utilities (bg-surface, text-muted, border-border, ...) instead of needing
+   bg-[var(--color-surface)] arbitrary-value classes everywhere. Overriding
+   the same custom properties below for [data-theme='dark'] still works,
+   since the generated utilities reference var(--color-*) at render time. */
+@theme {
+  --color-bg: #f7f5f2;
+  --color-surface: #ffffff;
+  --color-surface-hover: #eef3f8;
+  --color-border: #cccccc;
+  --color-text: #222222;
+  --color-muted: #666666;
+  --color-accent: #2c3e50;
+  --color-accent-text: #ffffff;
+}
+
+[data-theme='dark'] {
+  --color-bg: #1b1d22;
+  --color-surface: #262930;
+  --color-surface-hover: #333844;
+  --color-border: #444851;
+  --color-text: #e8e6e3;
+  --color-muted: #a3a7ae;
+  --color-accent: #6fa8dc;
+  --color-accent-text: #14151a;
+}
