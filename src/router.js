@@ -10,6 +10,8 @@ export const routes = [
     // :scope is optional — /flashcards is the scope picker, /flashcards/:scope
     // is an active session for that row/group, so picking a scope is a real
     // navigation (back button returns to the picker) rather than local state.
+    // :scope may be a comma-separated list of group ids (e.g. "a,k,s") to
+    // practice several rows/tables together in one session.
     path: '/flashcards/:scope?',
     name: 'flashcards',
     component: Flashcards,

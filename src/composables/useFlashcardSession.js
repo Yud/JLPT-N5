@@ -13,7 +13,8 @@ function shuffle(items) {
 
 /**
  * Drives a single flashcard practice session for a given scope
- * (a row id, a table id, or "all") — see contracts/composables.contract.md.
+ * (a row id, a table id, "all", or an array combining several of those)
+ * — see contracts/composables.contract.md.
  */
 export function useFlashcardSession(scopeId) {
   const order = ref([])

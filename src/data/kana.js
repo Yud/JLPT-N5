@@ -18,7 +18,7 @@ const ROW_DEFS = [
   ['y', 'Y', 'base', [['a', 'や', 'ya'], ['u', 'ゆ', 'yu'], ['o', 'よ', 'yo']]],
   ['r', 'R', 'base', [['a', 'ら', 'ra'], ['i', 'り', 'ri'], ['u', 'る', 'ru'], ['e', 'れ', 're'], ['o', 'ろ', 'ro']]],
   ['w', 'W', 'base', [['a', 'わ', 'wa'], ['o', 'を', 'wo']]],
-  ['nn', 'N', 'base', [['a', 'ん', 'n']]],
+  ['nn', 'ん', 'base', [['a', 'ん', 'n']]],
 
   // Dakuten (voiced) / Handakuten (semi-voiced)
   ['g', 'G', 'dakuten', [['a', 'が', 'ga'], ['i', 'ぎ', 'gi'], ['u', 'ぐ', 'gu'], ['e', 'げ', 'ge'], ['o', 'ご', 'go']]],
@@ -95,12 +95,28 @@ export function getPracticeGroups() {
 }
 
 /**
- * Returns every HiraganaCharacter belonging to a row id, a table id, or "all".
+ * Returns every HiraganaCharacter belonging to a row id, a table id, or
+ * "all". `groupId` may also be an array of ids, in which case the union of
+ * their characters is returned (deduplicated, e.g. when a row and its table
+ * are both selected).
  */
 export function getCharactersForGroup(groupId) {
-  if (groupId === 'all') return KANA
-  if (groupId === 'base' || groupId === 'dakuten' || groupId === 'combination') {
-    return KANA.filter((c) => c.table === groupId)
+  const ids = Array.isArray(groupId) ? groupId : [groupId]
+  if (ids.includes('all')) return KANA
+
+  const seen = new Set()
+  const result = []
+  for (const id of ids) {
+    const matches =
+      id === 'base' || id === 'dakuten' || id === 'combination'
+        ? KANA.filter((c) => c.table === id)
+        : KANA.filter((c) => c.row === id)
+    for (const c of matches) {
+      if (!seen.has(c)) {
+        seen.add(c)
+        result.push(c)
+      }
+    }
   }
-  return KANA.filter((c) => c.row === groupId)
+  return result
 }
