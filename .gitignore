@@ -26,4 +26,4 @@ coverage/
 .playwright-cli/
 .claude/skills
 .specify
-specs/001-hiragana-learning-app
+specs/
