@@ -8,5 +8,6 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    passWithNoTests: true, // temporary: no test files exist yet; remove once real tests are added
   },
 })
