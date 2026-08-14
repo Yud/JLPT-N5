@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "pre-commit: scanning staged changes for secrets (gitleaks)..."
+if ! gitleaks protect --staged --redact --no-banner; then
+  echo "pre-commit: gitleaks found a likely secret in staged changes. Commit blocked." >&2
+  echo "pre-commit: if this is a false positive, add it to .gitleaksignore instead of bypassing this hook." >&2
+  exit 1
+fi
+
+echo "pre-commit: scanning GitHub Actions workflows for unpinned references (zizmor)..."
+if git diff --cached --name-only --diff-filter=ACM | grep -q '^\.github/workflows/'; then
+  if ! zizmor --no-progress .github/workflows/; then
+    echo "pre-commit: zizmor found an issue in .github/workflows/ (e.g. an action not pinned to a commit SHA). Commit blocked." >&2
+    exit 1
+  fi
+fi
+
+echo "pre-commit: checking package.json for floating (^/~) dependency ranges..."
+if git diff --cached --name-only --diff-filter=ACM | grep -q '^package\.json$'; then
+  if git show :package.json | grep -E '"[~^][0-9]' > /dev/null; then
+    echo "pre-commit: package.json has a floating (^ or ~) version range. Pin every dependency to an exact version. Commit blocked." >&2
+    git show :package.json | grep -nE '"[~^][0-9]' >&2
+    exit 1
+  fi
+fi
+
+echo "pre-commit: all checks passed."
