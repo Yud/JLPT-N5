@@ -5,44 +5,49 @@
 const COLUMNS_5 = ['a', 'i', 'u', 'e', 'o']
 const COLUMNS_3 = ['a', 'u', 'o']
 
-// [row, label, table, [ [column, kana, romaji], ... ] ]
+// [row, label, table, [ [column, kana, romaji, id], ... ] ]
+// `id` is a permanent, explicit identifier — never recomputed from row/column
+// or any other field — because it's the key spaced-repetition review state
+// (stored elsewhere, outside this repo) is keyed on. Relabeling a row/column
+// for display must never change a card's id, or existing users would lose
+// review progress on that card.
 const ROW_DEFS = [
   // Base gojūon
-  ['a', 'A', 'base', [['a', 'あ', 'a'], ['i', 'い', 'i'], ['u', 'う', 'u'], ['e', 'え', 'e'], ['o', 'お', 'o']]],
-  ['k', 'K', 'base', [['a', 'か', 'ka'], ['i', 'き', 'ki'], ['u', 'く', 'ku'], ['e', 'け', 'ke'], ['o', 'こ', 'ko']]],
-  ['s', 'S', 'base', [['a', 'さ', 'sa'], ['i', 'し', 'shi'], ['u', 'す', 'su'], ['e', 'せ', 'se'], ['o', 'そ', 'so']]],
-  ['t', 'T', 'base', [['a', 'た', 'ta'], ['i', 'ち', 'chi'], ['u', 'つ', 'tsu'], ['e', 'て', 'te'], ['o', 'と', 'to']]],
-  ['n', 'N', 'base', [['a', 'な', 'na'], ['i', 'に', 'ni'], ['u', 'ぬ', 'nu'], ['e', 'ね', 'ne'], ['o', 'の', 'no']]],
-  ['h', 'H', 'base', [['a', 'は', 'ha'], ['i', 'ひ', 'hi'], ['u', 'ふ', 'fu'], ['e', 'へ', 'he'], ['o', 'ほ', 'ho']]],
-  ['m', 'M', 'base', [['a', 'ま', 'ma'], ['i', 'み', 'mi'], ['u', 'む', 'mu'], ['e', 'め', 'me'], ['o', 'も', 'mo']]],
-  ['y', 'Y', 'base', [['a', 'や', 'ya'], ['u', 'ゆ', 'yu'], ['o', 'よ', 'yo']]],
-  ['r', 'R', 'base', [['a', 'ら', 'ra'], ['i', 'り', 'ri'], ['u', 'る', 'ru'], ['e', 'れ', 're'], ['o', 'ろ', 'ro']]],
-  ['w', 'W', 'base', [['a', 'わ', 'wa'], ['o', 'を', 'wo']]],
-  ['nn', 'ん', 'base', [['a', 'ん', 'n']]],
+  ['a', 'A', 'base', [['a', 'あ', 'a', 'hiragana-a'], ['i', 'い', 'i', 'hiragana-i'], ['u', 'う', 'u', 'hiragana-u'], ['e', 'え', 'e', 'hiragana-e'], ['o', 'お', 'o', 'hiragana-o']]],
+  ['k', 'K', 'base', [['a', 'か', 'ka', 'hiragana-ka'], ['i', 'き', 'ki', 'hiragana-ki'], ['u', 'く', 'ku', 'hiragana-ku'], ['e', 'け', 'ke', 'hiragana-ke'], ['o', 'こ', 'ko', 'hiragana-ko']]],
+  ['s', 'S', 'base', [['a', 'さ', 'sa', 'hiragana-sa'], ['i', 'し', 'shi', 'hiragana-shi'], ['u', 'す', 'su', 'hiragana-su'], ['e', 'せ', 'se', 'hiragana-se'], ['o', 'そ', 'so', 'hiragana-so']]],
+  ['t', 'T', 'base', [['a', 'た', 'ta', 'hiragana-ta'], ['i', 'ち', 'chi', 'hiragana-chi'], ['u', 'つ', 'tsu', 'hiragana-tsu'], ['e', 'て', 'te', 'hiragana-te'], ['o', 'と', 'to', 'hiragana-to']]],
+  ['n', 'N', 'base', [['a', 'な', 'na', 'hiragana-na'], ['i', 'に', 'ni', 'hiragana-ni'], ['u', 'ぬ', 'nu', 'hiragana-nu'], ['e', 'ね', 'ne', 'hiragana-ne'], ['o', 'の', 'no', 'hiragana-no']]],
+  ['h', 'H', 'base', [['a', 'は', 'ha', 'hiragana-ha'], ['i', 'ひ', 'hi', 'hiragana-hi'], ['u', 'ふ', 'fu', 'hiragana-fu'], ['e', 'へ', 'he', 'hiragana-he'], ['o', 'ほ', 'ho', 'hiragana-ho']]],
+  ['m', 'M', 'base', [['a', 'ま', 'ma', 'hiragana-ma'], ['i', 'み', 'mi', 'hiragana-mi'], ['u', 'む', 'mu', 'hiragana-mu'], ['e', 'め', 'me', 'hiragana-me'], ['o', 'も', 'mo', 'hiragana-mo']]],
+  ['y', 'Y', 'base', [['a', 'や', 'ya', 'hiragana-ya'], ['u', 'ゆ', 'yu', 'hiragana-yu'], ['o', 'よ', 'yo', 'hiragana-yo']]],
+  ['r', 'R', 'base', [['a', 'ら', 'ra', 'hiragana-ra'], ['i', 'り', 'ri', 'hiragana-ri'], ['u', 'る', 'ru', 'hiragana-ru'], ['e', 'れ', 're', 'hiragana-re'], ['o', 'ろ', 'ro', 'hiragana-ro']]],
+  ['w', 'W', 'base', [['a', 'わ', 'wa', 'hiragana-wa'], ['o', 'を', 'wo', 'hiragana-wo']]],
+  ['nn', 'ん', 'base', [['a', 'ん', 'n', 'hiragana-n']]],
 
   // Dakuten (voiced) / Handakuten (semi-voiced)
-  ['g', 'G', 'dakuten', [['a', 'が', 'ga'], ['i', 'ぎ', 'gi'], ['u', 'ぐ', 'gu'], ['e', 'げ', 'ge'], ['o', 'ご', 'go']]],
-  ['z', 'Z', 'dakuten', [['a', 'ざ', 'za'], ['i', 'じ', 'ji'], ['u', 'ず', 'zu'], ['e', 'ぜ', 'ze'], ['o', 'ぞ', 'zo']]],
-  ['d', 'D', 'dakuten', [['a', 'だ', 'da'], ['i', 'ぢ', 'di'], ['u', 'づ', 'du'], ['e', 'で', 'de'], ['o', 'ど', 'do']]],
-  ['b', 'B', 'dakuten', [['a', 'ば', 'ba'], ['i', 'び', 'bi'], ['u', 'ぶ', 'bu'], ['e', 'べ', 'be'], ['o', 'ぼ', 'bo']]],
-  ['p', 'P', 'dakuten', [['a', 'ぱ', 'pa'], ['i', 'ぴ', 'pi'], ['u', 'ぷ', 'pu'], ['e', 'ぺ', 'pe'], ['o', 'ぽ', 'po']]],
+  ['g', 'G', 'dakuten', [['a', 'が', 'ga', 'hiragana-ga'], ['i', 'ぎ', 'gi', 'hiragana-gi'], ['u', 'ぐ', 'gu', 'hiragana-gu'], ['e', 'げ', 'ge', 'hiragana-ge'], ['o', 'ご', 'go', 'hiragana-go']]],
+  ['z', 'Z', 'dakuten', [['a', 'ざ', 'za', 'hiragana-za'], ['i', 'じ', 'ji', 'hiragana-ji'], ['u', 'ず', 'zu', 'hiragana-zu'], ['e', 'ぜ', 'ze', 'hiragana-ze'], ['o', 'ぞ', 'zo', 'hiragana-zo']]],
+  ['d', 'D', 'dakuten', [['a', 'だ', 'da', 'hiragana-da'], ['i', 'ぢ', 'di', 'hiragana-di'], ['u', 'づ', 'du', 'hiragana-du'], ['e', 'で', 'de', 'hiragana-de'], ['o', 'ど', 'do', 'hiragana-do']]],
+  ['b', 'B', 'dakuten', [['a', 'ば', 'ba', 'hiragana-ba'], ['i', 'び', 'bi', 'hiragana-bi'], ['u', 'ぶ', 'bu', 'hiragana-bu'], ['e', 'べ', 'be', 'hiragana-be'], ['o', 'ぼ', 'bo', 'hiragana-bo']]],
+  ['p', 'P', 'dakuten', [['a', 'ぱ', 'pa', 'hiragana-pa'], ['i', 'ぴ', 'pi', 'hiragana-pi'], ['u', 'ぷ', 'pu', 'hiragana-pu'], ['e', 'ぺ', 'pe', 'hiragana-pe'], ['o', 'ぽ', 'po', 'hiragana-po']]],
 
   // Combinations (yōon)
-  ['kya', 'KY', 'combination', [['a', 'きゃ', 'kya'], ['u', 'きゅ', 'kyu'], ['o', 'きょ', 'kyo']]],
-  ['sha', 'SH', 'combination', [['a', 'しゃ', 'sha'], ['u', 'しゅ', 'shu'], ['o', 'しょ', 'sho']]],
-  ['cha', 'CH', 'combination', [['a', 'ちゃ', 'cha'], ['u', 'ちゅ', 'chu'], ['o', 'ちょ', 'cho']]],
-  ['nya', 'NY', 'combination', [['a', 'にゃ', 'nya'], ['u', 'にゅ', 'nyu'], ['o', 'にょ', 'nyo']]],
-  ['hya', 'HY', 'combination', [['a', 'ひゃ', 'hya'], ['u', 'ひゅ', 'hyu'], ['o', 'ひょ', 'hyo']]],
-  ['mya', 'MY', 'combination', [['a', 'みゃ', 'mya'], ['u', 'みゅ', 'myu'], ['o', 'みょ', 'myo']]],
-  ['rya', 'RY', 'combination', [['a', 'りゃ', 'rya'], ['u', 'りゅ', 'ryu'], ['o', 'りょ', 'ryo']]],
-  ['gya', 'GY', 'combination', [['a', 'ぎゃ', 'gya'], ['u', 'ぎゅ', 'gyu'], ['o', 'ぎょ', 'gyo']]],
-  ['ja', 'J', 'combination', [['a', 'じゃ', 'ja'], ['u', 'じゅ', 'ju'], ['o', 'じょ', 'jo']]],
-  ['bya', 'BY', 'combination', [['a', 'びゃ', 'bya'], ['u', 'びゅ', 'byu'], ['o', 'びょ', 'byo']]],
-  ['pya', 'PY', 'combination', [['a', 'ぴゃ', 'pya'], ['u', 'ぴゅ', 'pyu'], ['o', 'ぴょ', 'pyo']]],
+  ['kya', 'KY', 'combination', [['a', 'きゃ', 'kya', 'hiragana-kya'], ['u', 'きゅ', 'kyu', 'hiragana-kyu'], ['o', 'きょ', 'kyo', 'hiragana-kyo']]],
+  ['sha', 'SH', 'combination', [['a', 'しゃ', 'sha', 'hiragana-sha'], ['u', 'しゅ', 'shu', 'hiragana-shu'], ['o', 'しょ', 'sho', 'hiragana-sho']]],
+  ['cha', 'CH', 'combination', [['a', 'ちゃ', 'cha', 'hiragana-cha'], ['u', 'ちゅ', 'chu', 'hiragana-chu'], ['o', 'ちょ', 'cho', 'hiragana-cho']]],
+  ['nya', 'NY', 'combination', [['a', 'にゃ', 'nya', 'hiragana-nya'], ['u', 'にゅ', 'nyu', 'hiragana-nyu'], ['o', 'にょ', 'nyo', 'hiragana-nyo']]],
+  ['hya', 'HY', 'combination', [['a', 'ひゃ', 'hya', 'hiragana-hya'], ['u', 'ひゅ', 'hyu', 'hiragana-hyu'], ['o', 'ひょ', 'hyo', 'hiragana-hyo']]],
+  ['mya', 'MY', 'combination', [['a', 'みゃ', 'mya', 'hiragana-mya'], ['u', 'みゅ', 'myu', 'hiragana-myu'], ['o', 'みょ', 'myo', 'hiragana-myo']]],
+  ['rya', 'RY', 'combination', [['a', 'りゃ', 'rya', 'hiragana-rya'], ['u', 'りゅ', 'ryu', 'hiragana-ryu'], ['o', 'りょ', 'ryo', 'hiragana-ryo']]],
+  ['gya', 'GY', 'combination', [['a', 'ぎゃ', 'gya', 'hiragana-gya'], ['u', 'ぎゅ', 'gyu', 'hiragana-gyu'], ['o', 'ぎょ', 'gyo', 'hiragana-gyo']]],
+  ['ja', 'J', 'combination', [['a', 'じゃ', 'ja', 'hiragana-ja'], ['u', 'じゅ', 'ju', 'hiragana-ju'], ['o', 'じょ', 'jo', 'hiragana-jo']]],
+  ['bya', 'BY', 'combination', [['a', 'びゃ', 'bya', 'hiragana-bya'], ['u', 'びゅ', 'byu', 'hiragana-byu'], ['o', 'びょ', 'byo', 'hiragana-byo']]],
+  ['pya', 'PY', 'combination', [['a', 'ぴゃ', 'pya', 'hiragana-pya'], ['u', 'ぴゅ', 'pyu', 'hiragana-pyu'], ['o', 'ぴょ', 'pyo', 'hiragana-pyo']]],
 ]
 
 export const KANA = ROW_DEFS.flatMap(([row, , table, cells]) =>
-  cells.map(([column, kana, romaji]) => ({ kana, romaji, table, row, column }))
+  cells.map(([column, kana, romaji, id]) => ({ id, kana, romaji, table, row, column }))
 )
 
 // Precomputed grid layout for KanaTable.vue: which rows/columns each

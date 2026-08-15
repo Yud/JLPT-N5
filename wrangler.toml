@@ -1,0 +1,8 @@
+name = "n5"
+pages_build_output_dir = "./dist"
+compatibility_date = "2026-08-15"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hiragana-db"
+database_id = "1a36e96e-d1ea-42ed-ae89-ad8c3af1c5dd"

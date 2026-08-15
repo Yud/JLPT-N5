@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { getPracticeGroups, getCharactersForGroup } from './kana.js'
+import { KANA, getPracticeGroups, getCharactersForGroup } from './kana.js'
+
+describe('KANA', () => {
+  it('has a unique, non-empty id for every card', () => {
+    const ids = KANA.map((c) => c.id)
+    expect(ids.every((id) => typeof id === 'string' && id.length > 0)).toBe(true)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})
 
 describe('getPracticeGroups', () => {
   it('has no two row groups sharing a label', () => {
