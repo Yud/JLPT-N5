@@ -32,14 +32,38 @@
       <p>Card {{ session.progress.value.index }} / {{ session.progress.value.total }}</p>
 
       <div v-if="!session.complete.value">
-        <div class="my-6 text-center">
-          <div class="text-5xl">{{ session.currentCharacter.value.kana }}</div>
-          <div v-if="session.revealed.value" class="text-2xl text-muted">
-            {{ session.currentCharacter.value.romaji }}
-          </div>
+        <div class="my-6 flex w-full items-center justify-center gap-4">
+          <!-- Mirrors the skip button's footprint on the opposite side, so the
+               card stays centered on the row regardless of whether the skip
+               button is visible — reveal never shifts the card. -->
+          <div class="h-16 w-16 shrink-0" aria-hidden="true"></div>
+          <button
+            type="button"
+            class="flex h-48 w-full max-w-xs cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-border bg-surface shadow-sm transition-colors hover:bg-surface-hover disabled:cursor-default disabled:hover:bg-surface"
+            :disabled="session.revealed.value"
+            @click="session.reveal()"
+          >
+            <span class="text-5xl">{{ session.currentCharacter.value.kana }}</span>
+            <span v-if="session.revealed.value" class="text-2xl text-muted">
+              {{ session.currentCharacter.value.romaji }}
+            </span>
+          </button>
+          <button
+            type="button"
+            class="flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border bg-surface text-3xl text-muted shadow-sm transition-colors hover:bg-surface-hover hover:text-text"
+            :title="session.revealed.value ? 'Skip without grading' : 'Reveal answer'"
+            :aria-label="session.revealed.value ? 'Skip to next card without grading' : 'Reveal answer'"
+            @click="session.revealed.value ? session.next() : session.reveal()"
+          >
+            {{ session.revealed.value ? '›' : '?' }}
+          </button>
         </div>
-        <AppButton v-if="!session.revealed.value" variant="primary" @click="session.reveal()">Reveal</AppButton>
-        <AppButton v-else variant="primary" @click="session.next()">Next</AppButton>
+        <div v-if="session.revealed.value" class="flex flex-wrap justify-center gap-2">
+          <AppButton variant="danger" @click="session.grade('again')"><span class="text-xl">😤</span> Again</AppButton>
+          <AppButton variant="warning" @click="session.grade('hard')"><span class="text-xl">🙄</span> Hard</AppButton>
+          <AppButton variant="success" @click="session.grade('good')"><span class="text-xl">😏</span> Good</AppButton>
+          <AppButton variant="info" @click="session.grade('easy')"><span class="text-xl">😎</span> Easy</AppButton>
+        </div>
       </div>
 
       <div v-else class="flex flex-wrap gap-2">

@@ -46,5 +46,19 @@ export function useFlashcardSession(scopeId) {
     revealed.value = false
   }
 
-  return { currentCharacter, revealed, complete, progress, reveal, next, restart }
+  // Records a review grade for the current card and advances immediately —
+  // local progress isn't gated on the network request, so a slow or failed
+  // request never blocks the session.
+  function grade(value) {
+    const card = currentCharacter.value
+    if (!card) return
+    next()
+    fetch(`/api/reviews/${card.id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grade: value }),
+    }).catch(() => {})
+  }
+
+  return { currentCharacter, revealed, complete, progress, reveal, next, grade, restart }
 }
