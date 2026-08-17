@@ -15,7 +15,7 @@
   "dependencies": {
     "@nuxt/ui": "4.10.0",
     "vue": "3.5.41",
-    "vue-router": "4.6.4"
+    "vue-router": "5.2.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.21.3",
