@@ -15,7 +15,7 @@
         v-for="button in writer.buttons.value"
         :key="button.uid"
         :character="button"
-        :disabled="isUsed(button) || writer.status.value !== 'in-progress'"
+        :disabled="writer.isExhausted(button) || writer.status.value !== 'in-progress'"
         @select="writer.select"
       />
     </div>
@@ -47,8 +47,4 @@ import CharacterButton from './CharacterButton.vue'
 import AppButton from './AppButton.vue'
 
 const writer = useWritingExercise(WORDS)
-
-function isUsed(button) {
-  return writer.selected.value.some((s) => s.uid === button.uid)
-}
 </script>

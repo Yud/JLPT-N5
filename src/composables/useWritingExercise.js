@@ -21,22 +21,16 @@ function tablesNeededFor(word) {
 }
 
 // Builds the shuffled, distractor-filled button set for a word: the union of
-// every full table the word's characters belong to (FR-010a), plus one extra
-// button per repeated glyph beyond its first occurrence (FR-014).
+// every full table the word's characters belong to (FR-010a). A repeated
+// glyph gets a single button that stays clickable until it's been used as
+// many times as the word needs it — see isExhausted() below (FR-014) —
+// rather than one disposable button instance per occurrence, which left a
+// learner unable to find the (visually identical, randomly placed) leftover
+// button for a glyph's second use.
 function buildButtons(word) {
   const tables = tablesNeededFor(word)
   let uid = 0
   const buttons = KANA.filter((c) => tables.has(c.table)).map((c) => ({ ...c, uid: uid++ }))
-
-  const counts = {}
-  for (const glyph of word.kana) counts[glyph] = (counts[glyph] || 0) + 1
-  for (const [glyph, count] of Object.entries(counts)) {
-    const entry = KANA.find((c) => c.kana === glyph)
-    for (let i = 1; i < count; i++) {
-      buttons.push({ ...entry, uid: uid++ })
-    }
-  }
-
   return shuffle(buttons)
 }
 
@@ -85,7 +79,19 @@ export function useWritingExercise(wordList) {
     status.value = 'in-progress'
   }
 
+  // A button is exhausted (and should disable) once its glyph has been
+  // selected as many times as currentWord needs it — not after a single
+  // click — so a repeated glyph stays available for its later
+  // occurrence(s). Glyphs the word doesn't need at all (distractors) are
+  // never exhausted, so they stay clickable as wrong answers (FR-010a).
+  function isExhausted(character) {
+    const needed = currentWord.value.kana.filter((k) => k === character.kana).length
+    if (needed === 0) return false
+    const used = selected.value.filter((s) => s.kana === character.kana).length
+    return used >= needed
+  }
+
   nextWord()
 
-  return { currentWord, buttons, selected, status, select, undoLast, clearAttempt, nextWord }
+  return { currentWord, buttons, selected, status, select, undoLast, clearAttempt, nextWord, isExhausted }
 }
