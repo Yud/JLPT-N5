@@ -2,6 +2,8 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import ReferenceTables from './components/ReferenceTables.vue'
 import Flashcards from './components/Flashcards.vue'
 import WritingExercise from './components/WritingExercise.vue'
+import VocabReference from './components/VocabReference.vue'
+import VocabFlashcards from './components/VocabFlashcards.vue'
 
 export const routes = [
   { path: '/', redirect: '/reference' },
@@ -18,6 +20,15 @@ export const routes = [
     meta: { label: 'Flashcards' },
   },
   { path: '/writing', name: 'writing', component: WritingExercise, meta: { label: 'Writing Exercise' } },
+  { path: '/vocab', name: 'vocab', component: VocabReference, meta: { label: 'Vocabulary' } },
+  {
+    // Same :scope convention as /flashcards, but the scope is a vocab
+    // category id (or comma-separated list of them) instead of a kana row/table.
+    path: '/vocab-flashcards/:scope?',
+    name: 'vocab-flashcards',
+    component: VocabFlashcards,
+    meta: { label: 'Vocab Flashcards' },
+  },
 ]
 
 // Hash history (not createWebHistory) so the built dist/index.html keeps

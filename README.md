@@ -1,14 +1,17 @@
-# Hiragana Learning App
+# JLPT N5 Learning App
 
-A small, fully client-side app for learning Japanese hiragana — reference charts, flashcards, and a writing exercise. Built with Vue 3 + Vite, styled with Tailwind CSS, and ships as a single static `index.html` with no backend.
+A small, mostly client-side app for JLPT N5 exam prep — hiragana reference charts, flashcards, and a writing exercise, plus a vocabulary reference and flashcard deck covering core N5 words (with kanji). Built with Vue 3 + Vite, styled with Tailwind CSS, and ships as a static `index.html` with a small Cloudflare Pages Functions backend for spaced-repetition review tracking.
 
 ## Features
 
-- **Reference charts** — the base hiragana table (a/k/s/t/n/h/m/y/r/w), the dakuten/handakuten table (voiced and semi-voiced sounds), and the combinations (yōon) table, every cell showing the character and its romanized reading.
-- **Flashcards** — pick a scope (a single row, a table group, or all characters) and step through a shuffled deck, revealing each answer on demand.
+- **Hiragana reference charts** — the base hiragana table (a/k/s/t/n/h/m/y/r/w), the dakuten/handakuten table (voiced and semi-voiced sounds), and the combinations (yōon) table, every cell showing the character and its romanized reading.
+- **Hiragana flashcards** — pick a scope (a single row, a table group, or all characters) and step through a shuffled deck, revealing each answer on demand.
 - **Writing exercises** — given a word in romaji (e.g. "sushi"), spell it by clicking the correct hiragana out of a shuffled grid that includes distractor characters.
+- **Vocabulary reference** — core N5 words grouped by theme (greetings, numbers, family, food, time, verbs, adjectives, ...), each showing kanji, kana, and English meaning.
+- **Vocabulary flashcards** — pick one or more categories and step through a shuffled deck; each card shows the word in kanji + kana and you guess the meaning before revealing it.
+- **Spaced-repetition review** — grading a flashcard (again/hard/good/easy) for signed-in users schedules its next review via a Cloudflare D1-backed API, shared across the hiragana and vocabulary decks.
 - **Dark mode** — toggle in the header; respects your system preference on first visit and remembers your choice.
-- **Routing** — each section has its own URL (including a picked flashcard scope, e.g. `#/flashcards/s`), so the browser back/forward buttons work as expected.
+- **Routing** — each section has its own URL (including a picked flashcard scope, e.g. `#/flashcards/s` or `#/vocab-flashcards/food`), so the browser back/forward buttons work as expected.
 
 ## Getting started
 
@@ -78,12 +81,15 @@ tests/
 src/
 ├── main.js              # App bootstrap
 ├── App.vue               # Layout: header, tab nav, router outlet
-├── router.js              # Routes for reference / flashcards / writing
+├── router.js              # Routes for reference / flashcards / writing / vocab / vocab-flashcards
 ├── data/
 │   ├── kana.js            # Canonical hiragana dataset + practice groups
-│   └── words.js           # Curated vocabulary for writing exercises
+│   ├── words.js           # Curated N5 vocabulary (kanji/kana/meaning/category) + category groups
+│   └── decks.js           # Deck registry (which card ids belong to which spaced-repetition deck)
 ├── composables/
-│   ├── useFlashcardSession.js
+│   ├── useCardSession.js         # Shared flashcard session engine (shuffle/reveal/grade)
+│   ├── useFlashcardSession.js    # Hiragana flashcards, built on useCardSession
+│   ├── useVocabFlashcardSession.js # Vocabulary flashcards, built on useCardSession
 │   ├── useWritingExercise.js
 │   └── useTheme.js
 ├── components/
@@ -91,6 +97,9 @@ src/
 │   ├── KanaTable.vue
 │   ├── Flashcards.vue
 │   ├── WritingExercise.vue
+│   ├── VocabReference.vue
+│   ├── VocabCard.vue
+│   ├── VocabFlashcards.vue
 │   ├── CharacterButton.vue
 │   └── AppButton.vue
 └── style.css              # Tailwind import + theme tokens
@@ -98,4 +107,4 @@ src/
 
 ## Scope
 
-Hiragana only — katakana and kanji are out of scope. No accounts, backend, or persistence of learning progress between browser sessions; the dark/light mode choice is the one thing remembered across visits (via `localStorage`).
+Hiragana and core N5 vocabulary (with kanji) are covered today; katakana, grammar, and listening/reading comprehension are future pillars still out of scope. No accounts; the dark/light mode choice and spaced-repetition review state (for signed-in users, via Cloudflare Access) are the only things persisted across visits.

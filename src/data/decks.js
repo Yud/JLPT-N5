@@ -4,11 +4,14 @@
 // cards — without touching the card's own definition.
 
 import { KANA } from './kana.js'
+import { WORDS } from './words.js'
 
 export const DECK_NAMES = Object.freeze({
   HIRAGANA: 'hiragana',
+  VOCABULARY: 'vocabulary',
 })
 
 export const DECKS = {
   [DECK_NAMES.HIRAGANA]: new Set(KANA.map((c) => c.id)),
+  [DECK_NAMES.VOCABULARY]: new Set(WORDS.map((w) => w.id)),
 }

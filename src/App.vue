@@ -1,6 +1,6 @@
 <template>
   <UApp>
-    <UHeader title="Hiragana Learning App">
+    <UHeader title="JLPT N5 Learning App">
       <UNavigationMenu :items="navItems" />
 
       <template #right>
