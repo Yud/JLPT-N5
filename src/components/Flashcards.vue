@@ -59,10 +59,18 @@
           </button>
         </div>
         <div v-if="session.revealed.value" class="flex flex-wrap justify-center gap-2">
-          <AppButton variant="danger" @click="session.grade('again')"><span class="text-xl">😤</span> Again</AppButton>
-          <AppButton variant="warning" @click="session.grade('hard')"><span class="text-xl">🙄</span> Hard</AppButton>
-          <AppButton variant="success" @click="session.grade('good')"><span class="text-xl">😏</span> Good</AppButton>
-          <AppButton variant="info" @click="session.grade('easy')"><span class="text-xl">😎</span> Easy</AppButton>
+          <AppButton variant="danger" aria-label="Again" @click="session.grade('again')"
+            ><span class="text-xl">😤</span> <span class="hidden sm:inline">Again</span></AppButton
+          >
+          <AppButton variant="warning" aria-label="Hard" @click="session.grade('hard')"
+            ><span class="text-xl">🙄</span> <span class="hidden sm:inline">Hard</span></AppButton
+          >
+          <AppButton variant="success" aria-label="Good" @click="session.grade('good')"
+            ><span class="text-xl">😏</span> <span class="hidden sm:inline">Good</span></AppButton
+          >
+          <AppButton variant="info" aria-label="Easy" @click="session.grade('easy')"
+            ><span class="text-xl">😎</span> <span class="hidden sm:inline">Easy</span></AppButton
+          >
         </div>
       </div>
 
