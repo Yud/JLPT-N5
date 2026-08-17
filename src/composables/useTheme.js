@@ -12,7 +12,7 @@ function loadInitialTheme() {
 }
 
 function applyTheme(value) {
-  document.documentElement.setAttribute('data-theme', value)
+  document.documentElement.classList.toggle('dark', value === 'dark')
   localStorage.setItem(STORAGE_KEY, value)
 }
 

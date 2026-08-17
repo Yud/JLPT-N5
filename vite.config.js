@@ -1,11 +1,15 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import tailwindcss from '@tailwindcss/vite'
+import ui from '@nuxt/ui/vite'
 import { defaultExclude } from 'vitest/config'
 
 export default defineConfig({
   base: './',
-  plugins: [vue(), tailwindcss()],
+  // ui() bundles its own @tailwindcss/vite plugin, so it replaces (not
+  // supplements) a standalone tailwindcss() plugin. colorMode: false skips
+  // Nuxt UI's own dark-mode state management — useTheme.js already owns
+  // that (see style.css for how the two are wired together).
+  plugins: [vue(), ui({ colorMode: false })],
   test: {
     name: 'app',
     environment: 'jsdom',

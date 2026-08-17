@@ -13,13 +13,14 @@
     "dev:api": "npm run build && wrangler pages dev dist"
   },
   "dependencies": {
+    "@nuxt/ui": "4.10.0",
     "vue": "3.5.41",
     "vue-router": "4.6.4"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.21.3",
+    "@iconify-json/lucide": "1.2.123",
     "@playwright/test": "1.62.1",
-    "@tailwindcss/vite": "4.3.3",
     "@vitejs/plugin-vue": "5.2.4",
     "@vue/test-utils": "2.4.11",
     "jsdom": "24.1.3",

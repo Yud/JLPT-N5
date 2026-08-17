@@ -1,13 +1,15 @@
 @import 'tailwindcss';
+@import '@nuxt/ui';
 
-/* Lets `dark:` utilities key off our data-theme attribute instead of Tailwind's
-   default prefers-color-scheme strategy, matching src/composables/useTheme.js. */
-@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+/* @nuxt/ui's CSS already declares a `dark` variant keyed off a `.dark` class
+   on an ancestor (see node_modules/@nuxt/ui/dist/runtime/index.css), so our
+   own dark: utilities ride the same class instead of declaring a competing
+   variant. useTheme.js toggles that class. */
 
 /* Design tokens. Registering these in @theme makes Tailwind generate real
    utilities (bg-surface, text-muted, border-border, ...) instead of needing
    bg-[var(--color-surface)] arbitrary-value classes everywhere. Overriding
-   the same custom properties below for [data-theme='dark'] still works,
+   the same custom properties below for .dark still works,
    since the generated utilities reference var(--color-*) at render time. */
 @theme {
   --color-bg: #f7f5f2;
@@ -20,7 +22,7 @@
   --color-accent-text: #ffffff;
 }
 
-[data-theme='dark'] {
+.dark {
   --color-bg: #1b1d22;
   --color-surface: #262930;
   --color-surface-hover: #333844;

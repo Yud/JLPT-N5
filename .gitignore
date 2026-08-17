@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-ssr/
+auto-imports.d.ts
+components.d.ts
 *.local
 .wrangler/
 
