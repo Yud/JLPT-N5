@@ -10,6 +10,7 @@ A small, mostly client-side app for JLPT N5 exam prep — hiragana reference cha
 - **Katakana reference charts and flashcards** — the same base/dakuten/combinations tables and scoped flashcard sessions as hiragana, over the katakana syllabary.
 - **Vocabulary reference** — core N5 words grouped by theme (greetings, numbers, family, food, time, verbs, adjectives, ...), each showing kanji, kana, and English meaning.
 - **Vocabulary flashcards** — pick one or more categories and step through a shuffled deck; each card shows the word in kanji + kana and you guess the meaning before revealing it.
+- **Pronunciation playback** — a speaker button on every vocab word (reference and flashcards) and a free-text "Text to Speech" page (`#/speak`) read Japanese aloud via the browser's built-in Web Speech API, preferring macOS's Kyoko voice when available.
 - **Spaced-repetition review** — grading a flashcard (again/hard/good/easy) for signed-in users schedules its next review via a Cloudflare D1-backed API, shared across the hiragana and vocabulary decks.
 - **Dark mode** — toggle in the header; respects your system preference on first visit and remembers your choice.
 - **Routing** — each section has its own URL (including a picked flashcard scope, e.g. `#/flashcards/s`, `#/katakana-flashcards/s`, or `#/vocab-flashcards/food`), so the browser back/forward buttons work as expected.

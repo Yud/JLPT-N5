@@ -6,6 +6,7 @@ import KatakanaReferenceTables from './components/KatakanaReferenceTables.vue'
 import KatakanaFlashcards from './components/KatakanaFlashcards.vue'
 import VocabReference from './components/VocabReference.vue'
 import VocabFlashcards from './components/VocabFlashcards.vue'
+import TextToSpeech from './components/TextToSpeech.vue'
 
 // meta.group clusters routes into one nav dropdown per pillar (Hiragana /
 // Katakana / Vocabulary), so adding a same-shaped pillar later is just more
@@ -54,6 +55,9 @@ export const routes = [
     component: VocabFlashcards,
     meta: { group: 'Vocabulary', label: 'Flashcards' },
   },
+  // No group — a standalone tool, not tied to any one pillar, so it gets
+  // its own flat top-level nav item instead of living in a dropdown.
+  { path: '/speak', name: 'speak', component: TextToSpeech, meta: { label: 'Text to Speech' } },
 ]
 
 // Hash history (not createWebHistory) so the built dist/index.html keeps
