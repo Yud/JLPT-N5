@@ -37,20 +37,30 @@
                card stays centered on the row regardless of whether the skip
                button is visible — reveal never shifts the card. -->
           <div class="h-16 w-16 shrink-0" aria-hidden="true"></div>
-          <button
-            type="button"
-            class="flex h-48 w-full max-w-xs cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-border bg-surface shadow-sm transition-colors hover:bg-surface-hover disabled:cursor-default disabled:hover:bg-surface"
-            :disabled="session.revealed.value"
-            @click="session.reveal()"
-          >
-            <span class="text-4xl">{{ session.currentCharacter.value.kanji }}</span>
-            <span v-if="session.currentCharacter.value.kanji !== session.currentCharacter.value.kana.join('')" class="text-xl text-muted">
-              {{ session.currentCharacter.value.kana.join('') }}
-            </span>
-            <span v-if="session.revealed.value" class="text-2xl text-muted">
-              {{ session.currentCharacter.value.meaning }}
-            </span>
-          </button>
+          <div class="relative w-full max-w-xs">
+            <button
+              type="button"
+              class="flex h-48 w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-border bg-surface shadow-sm transition-colors hover:bg-surface-hover disabled:cursor-default disabled:hover:bg-surface"
+              :disabled="session.revealed.value"
+              @click="session.reveal()"
+            >
+              <span class="text-4xl">{{ session.currentCharacter.value.kanji }}</span>
+              <span v-if="session.currentCharacter.value.kanji !== session.currentCharacter.value.kana.join('')" class="text-xl text-muted">
+                {{ session.currentCharacter.value.kana.join('') }}
+              </span>
+              <span v-if="session.revealed.value" class="text-2xl text-muted">
+                {{ session.currentCharacter.value.meaning }}
+              </span>
+            </button>
+            <button
+              type="button"
+              class="absolute top-2 right-2 cursor-pointer rounded-full p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-text"
+              aria-label="Play pronunciation"
+              @click="speak(session.currentCharacter.value.kanji)"
+            >
+              🔊
+            </button>
+          </div>
           <button
             type="button"
             class="flex h-16 w-16 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border bg-surface text-3xl text-muted shadow-sm transition-colors hover:bg-surface-hover hover:text-text"
@@ -91,9 +101,11 @@ import { shallowRef, reactive, computed, onActivated } from 'vue'
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router'
 import { getVocabCategories } from '../data/words.js'
 import { useVocabFlashcardSession } from '../composables/useVocabFlashcardSession.js'
+import { useSpeech } from '../composables/useSpeech.js'
 import AppButton from './AppButton.vue'
 
 const groups = getVocabCategories()
+const { speak } = useSpeech()
 const route = useRoute()
 const router = useRouter()
 
