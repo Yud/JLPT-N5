@@ -7,11 +7,12 @@ A small, mostly client-side app for JLPT N5 exam prep — hiragana reference cha
 - **Hiragana reference charts** — the base hiragana table (a/k/s/t/n/h/m/y/r/w), the dakuten/handakuten table (voiced and semi-voiced sounds), and the combinations (yōon) table, every cell showing the character and its romanized reading.
 - **Hiragana flashcards** — pick a scope (a single row, a table group, or all characters) and step through a shuffled deck, revealing each answer on demand.
 - **Writing exercises** — given a word in romaji (e.g. "sushi"), spell it by clicking the correct hiragana out of a shuffled grid that includes distractor characters.
+- **Katakana reference charts and flashcards** — the same base/dakuten/combinations tables and scoped flashcard sessions as hiragana, over the katakana syllabary.
 - **Vocabulary reference** — core N5 words grouped by theme (greetings, numbers, family, food, time, verbs, adjectives, ...), each showing kanji, kana, and English meaning.
 - **Vocabulary flashcards** — pick one or more categories and step through a shuffled deck; each card shows the word in kanji + kana and you guess the meaning before revealing it.
 - **Spaced-repetition review** — grading a flashcard (again/hard/good/easy) for signed-in users schedules its next review via a Cloudflare D1-backed API, shared across the hiragana and vocabulary decks.
 - **Dark mode** — toggle in the header; respects your system preference on first visit and remembers your choice.
-- **Routing** — each section has its own URL (including a picked flashcard scope, e.g. `#/flashcards/s` or `#/vocab-flashcards/food`), so the browser back/forward buttons work as expected.
+- **Routing** — each section has its own URL (including a picked flashcard scope, e.g. `#/flashcards/s`, `#/katakana-flashcards/s`, or `#/vocab-flashcards/food`), so the browser back/forward buttons work as expected.
 
 ## Getting started
 
@@ -81,14 +82,16 @@ tests/
 src/
 ├── main.js              # App bootstrap
 ├── App.vue               # Layout: header, tab nav, router outlet
-├── router.js              # Routes for reference / flashcards / writing / vocab / vocab-flashcards
+├── router.js              # Routes for reference / flashcards / writing / katakana / vocab / vocab-flashcards
 ├── data/
 │   ├── kana.js            # Canonical hiragana dataset + practice groups
+│   ├── katakana.js        # Canonical katakana dataset + practice groups (mirrors kana.js)
 │   ├── words.js           # Curated N5 vocabulary (kanji/kana/meaning/category) + category groups
 │   └── decks.js           # Deck registry (which card ids belong to which spaced-repetition deck)
 ├── composables/
 │   ├── useCardSession.js         # Shared flashcard session engine (shuffle/reveal/grade)
 │   ├── useFlashcardSession.js    # Hiragana flashcards, built on useCardSession
+│   ├── useKatakanaFlashcardSession.js # Katakana flashcards, built on useCardSession
 │   ├── useVocabFlashcardSession.js # Vocabulary flashcards, built on useCardSession
 │   ├── useWritingExercise.js
 │   └── useTheme.js
@@ -97,6 +100,8 @@ src/
 │   ├── KanaTable.vue
 │   ├── Flashcards.vue
 │   ├── WritingExercise.vue
+│   ├── KatakanaReferenceTables.vue
+│   ├── KatakanaFlashcards.vue
 │   ├── VocabReference.vue
 │   ├── VocabCard.vue
 │   ├── VocabFlashcards.vue
@@ -107,4 +112,4 @@ src/
 
 ## Scope
 
-Hiragana and core N5 vocabulary (with kanji) are covered today; katakana, grammar, and listening/reading comprehension are future pillars still out of scope. No accounts; the dark/light mode choice and spaced-repetition review state (for signed-in users, via Cloudflare Access) are the only things persisted across visits.
+Hiragana, katakana, and core N5 vocabulary (with kanji) are covered today; grammar and listening/reading comprehension are future pillars still out of scope. Katakana has reference charts and flashcards but no writing exercise yet — that needs its own curated katakana loanword list. No accounts; the dark/light mode choice and spaced-repetition review state (for signed-in users, via Cloudflare Access) are the only things persisted across visits.

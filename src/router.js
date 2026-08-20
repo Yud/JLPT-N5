@@ -2,12 +2,18 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import ReferenceTables from './components/ReferenceTables.vue'
 import Flashcards from './components/Flashcards.vue'
 import WritingExercise from './components/WritingExercise.vue'
+import KatakanaReferenceTables from './components/KatakanaReferenceTables.vue'
+import KatakanaFlashcards from './components/KatakanaFlashcards.vue'
 import VocabReference from './components/VocabReference.vue'
 import VocabFlashcards from './components/VocabFlashcards.vue'
 
+// meta.group clusters routes into one nav dropdown per pillar (Hiragana /
+// Katakana / Vocabulary), so adding a same-shaped pillar later is just more
+// routes with the same group name — see App.vue's navItems, which builds
+// the nested nav straight from this table.
 export const routes = [
   { path: '/', redirect: '/reference' },
-  { path: '/reference', name: 'reference', component: ReferenceTables, meta: { label: 'Reference' } },
+  { path: '/reference', name: 'reference', component: ReferenceTables, meta: { group: 'Hiragana', label: 'Reference' } },
   {
     // :scope is optional — /flashcards is the scope picker, /flashcards/:scope
     // is an active session for that row/group, so picking a scope is a real
@@ -17,17 +23,36 @@ export const routes = [
     path: '/flashcards/:scope?',
     name: 'flashcards',
     component: Flashcards,
-    meta: { label: 'Flashcards' },
+    meta: { group: 'Hiragana', label: 'Flashcards' },
   },
-  { path: '/writing', name: 'writing', component: WritingExercise, meta: { label: 'Writing Exercise' } },
-  { path: '/vocab', name: 'vocab', component: VocabReference, meta: { label: 'Vocabulary' } },
+  {
+    path: '/writing',
+    name: 'writing',
+    component: WritingExercise,
+    meta: { group: 'Hiragana', label: 'Writing Exercise' },
+  },
+  {
+    path: '/katakana-reference',
+    name: 'katakana-reference',
+    component: KatakanaReferenceTables,
+    meta: { group: 'Katakana', label: 'Reference' },
+  },
+  {
+    // Same :scope convention as /flashcards, but the scope is a katakana
+    // row/table id instead of a hiragana one.
+    path: '/katakana-flashcards/:scope?',
+    name: 'katakana-flashcards',
+    component: KatakanaFlashcards,
+    meta: { group: 'Katakana', label: 'Flashcards' },
+  },
+  { path: '/vocab', name: 'vocab', component: VocabReference, meta: { group: 'Vocabulary', label: 'Reference' } },
   {
     // Same :scope convention as /flashcards, but the scope is a vocab
     // category id (or comma-separated list of them) instead of a kana row/table.
     path: '/vocab-flashcards/:scope?',
     name: 'vocab-flashcards',
     component: VocabFlashcards,
-    meta: { label: 'Vocab Flashcards' },
+    meta: { group: 'Vocabulary', label: 'Flashcards' },
   },
 ]
 

@@ -54,18 +54,36 @@ watch(
   { immediate: true },
 )
 
-// Nav item labels/order come from the routes table itself (src/router.js) so
+// Nav structure/order comes from the routes table itself (src/router.js) so
 // the nav bar can't drift out of sync with it (SC-005: switching sections is
 // a single click on one of these items). Deliberately reads the plain
 // `routes` array rather than router.getRoutes() — the router reorders routes
 // internally once a dynamic segment (Flashcards' :scope) is involved, which
 // would silently reshuffle the nav bar's display order.
-const navItems = computed(() =>
-  routes
-    .filter((r) => r.meta?.label)
-    .map((r) => ({
-      label: r.meta.label,
-      to: { name: r.name, params: lastParams[r.name] || {} },
-    })),
-)
+//
+// Routes sharing a meta.group (e.g. "Hiragana") collapse into one dropdown
+// item with those routes as children, instead of each getting its own
+// top-level slot — otherwise every pillar's Reference/Flashcards/Writing
+// routes would crowd the top-level nav individually. Grouping is keyed on
+// first appearance order, matching the routes table.
+const navItems = computed(() => {
+  const items = []
+  const groupItems = new Map()
+  for (const r of routes) {
+    if (!r.meta?.label) continue
+    const child = { label: r.meta.label, to: { name: r.name, params: lastParams[r.name] || {} } }
+    if (!r.meta.group) {
+      items.push(child)
+      continue
+    }
+    let group = groupItems.get(r.meta.group)
+    if (!group) {
+      group = { label: r.meta.group, children: [] }
+      groupItems.set(r.meta.group, group)
+      items.push(group)
+    }
+    group.children.push(child)
+  }
+  return items
+})
 </script>
