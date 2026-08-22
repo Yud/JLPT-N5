@@ -30,7 +30,21 @@
               class="h-11 min-w-11 border border-border p-1 text-center sm:h-14 sm:min-w-14"
             >
               <div v-if="cell" class="flex flex-col items-center justify-center">
-                <span class="text-[1.75rem]">{{ cell.kana }}</span>
+                <span class="flex items-center gap-0.5">
+                  <span class="text-[1.75rem]">{{ cell.kana }}</span>
+                  <UPopover v-if="PHONETIC_NOTES[cell.id]">
+                    <button
+                      type="button"
+                      class="cursor-pointer self-start text-xs text-muted transition-colors hover:text-text"
+                      aria-label="Pronunciation note"
+                    >
+                      ⓘ
+                    </button>
+                    <template #content>
+                      <p class="max-w-xs p-3 text-sm">{{ PHONETIC_NOTES[cell.id] }}</p>
+                    </template>
+                  </UPopover>
+                </span>
                 <span class="text-[0.9rem] text-muted">{{ cell.romaji }}</span>
                 <button
                   v-if="speakable"
@@ -52,6 +66,7 @@
 
 <script setup>
 import { useSpeech } from '../composables/useSpeech.js'
+import { PHONETIC_NOTES } from '../data/phonetics.js'
 
 defineProps({
   title: { type: String, required: true },
