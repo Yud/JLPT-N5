@@ -32,6 +32,15 @@
               <div v-if="cell" class="flex flex-col items-center justify-center">
                 <span class="text-[1.75rem]">{{ cell.kana }}</span>
                 <span class="text-[0.9rem] text-muted">{{ cell.romaji }}</span>
+                <button
+                  v-if="speakable"
+                  type="button"
+                  class="cursor-pointer rounded-full p-0.5 text-muted transition-colors hover:bg-surface-hover hover:text-text"
+                  aria-label="Play pronunciation"
+                  @click="speak(cell.kana)"
+                >
+                  🔊
+                </button>
               </div>
             </td>
           </tr>
@@ -42,9 +51,18 @@
 </template>
 
 <script setup>
+import { useSpeech } from '../composables/useSpeech.js'
+
 defineProps({
   title: { type: String, required: true },
   // { columns: string[], rows: { row, label, cells: (HiraganaCharacter|null)[] }[] }
   layout: { type: Object, required: true },
+  // Shows a speaker button per cell. Reserved for the combinations (yōon)
+  // tables — base/dakuten rows are single kana the learner already has
+  // memorized cold by this point, so a button on every one of those cells
+  // would just be noise; the digraphs are the ones worth hearing.
+  speakable: { type: Boolean, default: false },
 })
+
+const { speak } = useSpeech()
 </script>

@@ -2,7 +2,7 @@
   <div class="space-y-8">
     <KanaTable title="Base Hiragana" :layout="TABLE_LAYOUTS.base" />
     <KanaTable title="Dakuten / Handakuten" :layout="TABLE_LAYOUTS.dakuten" />
-    <KanaTable title="Combinations (Yōon)" :layout="TABLE_LAYOUTS.combination" />
+    <KanaTable title="Combinations (Yōon)" :layout="TABLE_LAYOUTS.combination" speakable />
   </div>
 </template>
 
