@@ -15,7 +15,13 @@ function loadInitialRate() {
 
 function pickVoice() {
   const voices = window.speechSynthesis.getVoices()
-  return voices.find((v) => v.name === 'Kyoko') || voices.find((v) => v.lang.startsWith('ja')) || null
+  const kyokoVariants = voices.filter((v) => v.name.startsWith('Kyoko'))
+  // If the higher-quality voice has been downloaded (System Settings >
+  // Accessibility > Spoken Content), macOS lists it as a separate entry
+  // alongside the base voice — e.g. "Kyoko (Enhanced)" or "Kyoko (Premium)"
+  // — so prefer any such variant over the plain "Kyoko" when present.
+  const bestKyoko = kyokoVariants.find((v) => v.name !== 'Kyoko') || kyokoVariants[0]
+  return bestKyoko || voices.find((v) => v.lang.startsWith('ja')) || null
 }
 
 // Module-scope ref: one shared playback rate for the whole app (like
