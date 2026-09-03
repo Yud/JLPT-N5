@@ -45,12 +45,14 @@
               @click="session.reveal()"
             >
               <span class="text-4xl">{{ session.currentCharacter.value.kanji }}</span>
-              <span v-if="session.currentCharacter.value.kanji !== session.currentCharacter.value.kana.join('')" class="text-xl text-muted">
-                {{ session.currentCharacter.value.kana.join('') }}
-              </span>
-              <span v-if="session.revealed.value" class="text-2xl text-muted">
-                {{ session.currentCharacter.value.meaning }}
-              </span>
+              <template v-if="session.revealed.value">
+                <span v-if="session.currentCharacter.value.kanji !== session.currentCharacter.value.kana.join('')" class="text-xl text-muted">
+                  {{ session.currentCharacter.value.kana.join('') }}
+                </span>
+                <span class="text-2xl text-muted">
+                  {{ session.currentCharacter.value.meaning }}
+                </span>
+              </template>
             </button>
             <button
               type="button"
