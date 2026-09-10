@@ -9,6 +9,7 @@
             <th class="h-11 min-w-20 border border-border p-1 text-center font-semibold sm:h-14 sm:min-w-24" scope="col">Kanji</th>
             <th class="h-11 min-w-20 border border-border p-1 text-center font-semibold sm:h-14 sm:min-w-24" scope="col">Reading</th>
             <th class="h-11 min-w-20 border border-border p-1 text-center font-semibold sm:h-14 sm:min-w-24" scope="col">Romaji</th>
+            <th class="h-11 min-w-16 border border-border p-1 text-center font-semibold sm:h-14 sm:min-w-20" scope="col">Root</th>
           </tr>
         </thead>
         <tbody>
@@ -43,6 +44,7 @@
             </td>
             <td class="h-11 border border-border p-1 text-center sm:h-14">{{ item.reading }}</td>
             <td class="h-11 border border-border p-1 text-center text-muted sm:h-14">{{ item.romaji }}</td>
+            <td class="h-11 border border-border p-1 text-center sm:h-14">{{ item.root ?? '—' }}</td>
           </tr>
         </tbody>
       </table>
@@ -55,7 +57,7 @@ import { useSpeech } from '../composables/useSpeech.js'
 
 defineProps({
   title: { type: String, required: true },
-  // { id, number, kanji, reading, romaji, note? }[]
+  // { id, number, kanji, reading, romaji, root, note? }[]
   items: { type: Array, required: true },
 })
 

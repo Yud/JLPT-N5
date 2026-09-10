@@ -22,4 +22,19 @@ describe.each([
       expect(item.romaji.length).toBeGreaterThan(0)
     }
   })
+
+  it('has a root that is either null or a non-empty string', () => {
+    for (const item of set) {
+      expect(item.root === null || item.root.length > 0).toBe(true)
+    }
+  })
+})
+
+describe('shared roots', () => {
+  it('DAY_COUNTERS and THING_COUNTERS use the same root per position, day 1 excepted', () => {
+    for (let i = 0; i < 10; i++) {
+      if (DAY_COUNTERS[i].root === null) continue
+      expect(DAY_COUNTERS[i].root).toBe(THING_COUNTERS[i].root)
+    }
+  })
 })
