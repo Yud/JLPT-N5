@@ -1,7 +1,7 @@
 <template>
   <UApp>
     <UHeader title="JLPT N5 Learning App">
-      <UNavigationMenu :items="navItems" />
+      <UNavigationMenu :items="navItems" :ui="{ childList: 'grid-cols-1' }" />
 
       <template #right>
         <UButton
