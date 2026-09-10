@@ -6,6 +6,7 @@ import KatakanaReferenceTables from './components/KatakanaReferenceTables.vue'
 import KatakanaFlashcards from './components/KatakanaFlashcards.vue'
 import VocabReference from './components/VocabReference.vue'
 import VocabFlashcards from './components/VocabFlashcards.vue'
+import KanjiReferenceTables from './components/KanjiReferenceTables.vue'
 import TextToSpeech from './components/TextToSpeech.vue'
 
 // meta.group clusters routes into one nav dropdown per pillar (Hiragana /
@@ -54,6 +55,15 @@ export const routes = [
     name: 'vocab-flashcards',
     component: VocabFlashcards,
     meta: { group: 'Vocabulary', label: 'Flashcards' },
+  },
+  // Reference-only pillar — flashcard drilling for these already happens
+  // in WaniKani, so unlike the other pillars there's no matching
+  // flashcards/writing route here, just the table.
+  {
+    path: '/kanji-reference',
+    name: 'kanji-reference',
+    component: KanjiReferenceTables,
+    meta: { group: 'Kanji', label: 'Reference' },
   },
   // No group — a standalone tool, not tied to any one pillar, so it gets
   // its own flat top-level nav item instead of living in a dropdown.
