@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { DAY_COUNTERS, THING_COUNTERS } from './kanji.js'
+import { DAY_COUNTERS, THING_COUNTERS, PEOPLE_COUNTERS } from './kanji.js'
 
 describe.each([
   ['DAY_COUNTERS', DAY_COUNTERS],
   ['THING_COUNTERS', THING_COUNTERS],
+  ['PEOPLE_COUNTERS', PEOPLE_COUNTERS],
 ])('%s', (_name, set) => {
   it('has ten entries numbered 1 through 10 in order', () => {
     expect(set.map((item) => item.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
@@ -31,6 +32,9 @@ describe.each([
 })
 
 describe('shared roots', () => {
+  // PEOPLE_COUNTERS runs on Sino-Japanese cardinal roots instead of the
+  // native Yamato roots DAY_COUNTERS/THING_COUNTERS share, so it's
+  // deliberately excluded from this comparison.
   it('DAY_COUNTERS and THING_COUNTERS use the same root per position, day 1 excepted', () => {
     for (let i = 0; i < 10; i++) {
       if (DAY_COUNTERS[i].root === null) continue
