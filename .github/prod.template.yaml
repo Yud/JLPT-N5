@@ -1,13 +1,16 @@
 # Manifest of every env var the Cloudflare Pages Function layer needs in
 # production. A `${{ secrets.NAME }}` value means "read the GitHub Actions
-# secret NAME" — deploy.yml's steps resolve that themselves via
-# toJSON(secrets), since that expression syntax only evaluates live inside
-# workflow YAML, not in a plain file like this one; deploy fails fast if a
+# secret NAME" — deploy.yml's steps resolve that themselves by reading the
+# same-named env var (that expression syntax only evaluates live inside
+# workflow YAML, not in a plain file like this one); deploy fails fast if a
 # referenced secret isn't set. Anything else is a literal, non-secret value
 # applied as-is.
 #
-# To add a new one: add a line here, and the matching GitHub secret
-# (Settings -> Secrets and variables -> Actions) if it's secret-sourced —
-# no workflow changes needed either way.
+# To add a new one: add a line here, add the matching GitHub secret
+# (Settings -> Secrets and variables -> Actions) if it's secret-sourced,
+# AND wire `NAME: ${{ secrets.NAME }}` into the env: block of both
+# deploy.yml steps that read this file (naming each secret explicitly,
+# rather than dumping them all via toJSON(secrets), is what keeps zizmor's
+# CI scan clean).
 WANIKANI_API_KEY: ${{ secrets.WANIKANI_API_KEY }}
-WANIKANI_MIN_SRS_STAGE: "7"
+WANIKANI_MIN_SRS_STAGE: "6"

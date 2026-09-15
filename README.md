@@ -71,13 +71,15 @@ var Cloudflare Pages needs:
 
 ```yaml
 WANIKANI_API_KEY: ${{ secrets.WANIKANI_API_KEY }}
-WANIKANI_MIN_SRS_STAGE: "7"
+WANIKANI_MIN_SRS_STAGE: "6"
 ```
 
 A `${{ secrets.NAME }}` value means "read the GitHub Actions secret NAME"
 (deploy fails fast if it's not set); a literal string means "apply this
-plain, non-secret value directly" — that's how `WANIKANI_MIN_SRS_STAGE`
-(defaults to 7/Master) is set, no secret involved. (That expression syntax
+plain, non-secret value directly" — that's how `WANIKANI_MIN_SRS_STAGE` is
+set (currently 6/Guru II — lowered from the code's own 7/Master fallback
+since too few words have reached Master yet), no secret involved. (That
+expression syntax
 only evaluates live inside workflow YAML — here it's a convention
 `deploy.yml`'s steps parse themselves.)
 
