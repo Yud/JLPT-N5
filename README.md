@@ -11,6 +11,7 @@ A small, mostly client-side app for JLPT N5 exam prep — hiragana reference cha
 - **Vocabulary reference** — core N5 words grouped by theme (greetings, numbers, family, food, time, verbs, adjectives, ...), each showing kanji, kana, and English meaning.
 - **Vocabulary flashcards** — pick one or more categories and step through a shuffled deck; each card shows the word in kanji + kana and you guess the meaning before revealing it.
 - **Pronunciation playback** — a speaker button on every vocab word (reference and flashcards) and a free-text "Text to Speech" page (`#/speak`) read Japanese aloud via the browser's built-in Web Speech API, preferring macOS's Kyoko voice when available.
+- **Listening quiz** (`#/listening-quiz`) — hear a native pronunciation recording of a word you've studied on WaniKani and type its English meaning. Its word cache is refreshed on demand via an in-app "Sync from WaniKani" button (see below), filtered to a minimum SRS stage; nothing runs automatically, so it's always your own account, your own pace.
 - **Spaced-repetition review** — grading a flashcard (again/hard/good/easy) for signed-in users schedules its next review via a Cloudflare D1-backed API, shared across the hiragana and vocabulary decks.
 - **Dark mode** — toggle in the header; respects your system preference on first visit and remembers your choice.
 - **Routing** — each section has its own URL (including a picked flashcard scope, e.g. `#/flashcards/s`, `#/katakana-flashcards/s`, or `#/vocab-flashcards/food`), so the browser back/forward buttons work as expected.
@@ -33,6 +34,7 @@ Then open the printed local URL in a browser.
 | `npm run preview` | Serve the built `dist/` bundle locally |
 | `npm run test` | Run the unit test suite (Vitest) |
 | `npm run test:e2e` | Run the end-to-end suite (Playwright) — local only, see below |
+| `npm run sync:wanikani` | Refresh *local* D1's WaniKani word cache, for development (see below) |
 
 ## E2E tests
 
@@ -48,6 +50,66 @@ npm run test:e2e
 ```
 
 It starts the Vite dev server on port 5173 automatically (reusing one you already have running), runs the suite, and prints results to the terminal. `test-results/` and `playwright-report/` (gitignored) hold failure traces/screenshots when a test fails.
+
+## WaniKani listening quiz
+
+The listening quiz (`#/listening-quiz`) reads its word cache — WaniKani
+vocabulary, meanings, readings, and pronunciation audio URLs — from D1's
+`wanikani_words` table (`migrations/0002_create_wanikani_words.sql`) via
+`GET /api/wanikani-words`. Nothing WaniKani-sourced (words, meanings, audio
+URLs, or the API key) ever touches the repo.
+
+**Production**: click the "Sync from WaniKani" button at the top of the
+quiz page. It calls `POST /api/wanikani-words/sync`
+(`functions/api/wanikani-words/sync.js`), which runs entirely server-side —
+fetches from your WaniKani account and replaces D1's cache — using a
+`WANIKANI_API_KEY` Cloudflare Pages secret that never reaches the browser.
+
+That secret is provisioned automatically on every deploy, validated and
+applied against `.github/prod.template.yaml` — the manifest of every env
+var Cloudflare Pages needs:
+
+```yaml
+WANIKANI_API_KEY: ${{ secrets.WANIKANI_API_KEY }}
+WANIKANI_MIN_SRS_STAGE: "7"
+```
+
+A `${{ secrets.NAME }}` value means "read the GitHub Actions secret NAME"
+(deploy fails fast if it's not set); a literal string means "apply this
+plain, non-secret value directly" — that's how `WANIKANI_MIN_SRS_STAGE`
+(defaults to 7/Master) is set, no secret involved. (That expression syntax
+only evaluates live inside workflow YAML — here it's a convention
+`deploy.yml`'s steps parse themselves.)
+
+One-time setup: add a repo secret named `WANIKANI_API_KEY` (Settings →
+Secrets and variables → Actions) with your WaniKani token as the value.
+
+To add a future secret-sourced var: add a `NAME: ${{ secrets.NAME }}` line
+to `prod.template.yaml`, add the `NAME` repo secret, **and** wire
+`NAME: ${{ secrets.NAME }}` into the `env:` block of both
+`deploy.yml` steps that reference the template (`Validate required secrets
+are present` and `Apply config to Cloudflare Pages`) — referencing each
+secret by name, rather than dumping every repo secret at once, is what
+keeps zizmor's CI scan clean.
+
+**Local development**: `npm run sync:wanikani` populates your *local* D1
+instead, so you can build against realistic data without touching
+production:
+
+```bash
+cp .env.example .env   # then fill in WANIKANI_API_KEY (Settings → API Tokens on wanikani.com)
+npm run sync:wanikani  # defaults to srs_stage >= 6 (Guru II) — lower than prod's Master, for more sample data
+```
+
+Override the threshold with `WANIKANI_MIN_SRS_STAGE` in `.env` or
+`--min-srs-stage=N` on the command line.
+
+`wrangler` (via `npm run dev:api` or `npm test`) also auto-loads this same
+root `.env` into the Functions' local environment — so once it's filled in,
+the "Sync from WaniKani" **button** works locally too, against local D1,
+with no separate config. One consequence worth knowing: it means those
+commands exercise the *real* WaniKani API using your key while `.env` is
+populated, not a mock.
 
 ## Building & hosting
 
@@ -78,12 +140,14 @@ with no server-side rewrite rules required.
 index.html
 vite.config.js
 playwright.config.js
+scripts/
+└── sync-wanikani-words.mjs  # Refreshes D1's wanikani_words table from your WaniKani account
 tests/
 └── e2e/                  # Playwright e2e specs (local only, see E2E tests)
 src/
 ├── main.js              # App bootstrap
 ├── App.vue               # Layout: header, tab nav, router outlet
-├── router.js              # Routes for reference / flashcards / writing / katakana / vocab / vocab-flashcards
+├── router.js              # Routes for reference / flashcards / writing / katakana / vocab / vocab-flashcards / listening-quiz
 ├── data/
 │   ├── kana.js            # Canonical hiragana dataset + practice groups
 │   ├── katakana.js        # Canonical katakana dataset + practice groups (mirrors kana.js)
@@ -94,6 +158,9 @@ src/
 │   ├── useFlashcardSession.js    # Hiragana flashcards, built on useCardSession
 │   ├── useKatakanaFlashcardSession.js # Katakana flashcards, built on useCardSession
 │   ├── useVocabFlashcardSession.js # Vocabulary flashcards, built on useCardSession
+│   ├── useWanikaniWords.js       # Loads the D1-backed word cache via GET /api/wanikani-words
+│   ├── useWanikaniSync.js        # Triggers POST /api/wanikani-words/sync (the "Sync from WaniKani" button)
+│   ├── useListeningQuizSession.js # WaniKani listening quiz session engine
 │   ├── useWritingExercise.js
 │   └── useTheme.js
 ├── components/
@@ -106,6 +173,7 @@ src/
 │   ├── VocabReference.vue
 │   ├── VocabCard.vue
 │   ├── VocabFlashcards.vue
+│   ├── ListeningQuiz.vue
 │   ├── CharacterButton.vue
 │   └── AppButton.vue
 └── style.css              # Tailwind import + theme tokens
@@ -113,4 +181,4 @@ src/
 
 ## Scope
 
-Hiragana, katakana, and core N5 vocabulary (with kanji) are covered today; grammar and listening/reading comprehension are future pillars still out of scope. Katakana has reference charts and flashcards but no writing exercise yet — that needs its own curated katakana loanword list. No accounts; the dark/light mode choice and spaced-repetition review state (for signed-in users, via Cloudflare Access) are the only things persisted across visits.
+Hiragana, katakana, and core N5 vocabulary (with kanji) are covered today, plus a WaniKani-sourced listening quiz; grammar and reading comprehension are future pillars still out of scope. Katakana has reference charts and flashcards but no writing exercise yet — that needs its own curated katakana loanword list. No accounts; the dark/light mode choice and spaced-repetition review state (for signed-in users, via Cloudflare Access) are the only things persisted across visits.

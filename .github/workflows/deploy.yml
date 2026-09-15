@@ -18,6 +18,32 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # .github/prod.template.yaml is the manifest of every env var
+      # Cloudflare Pages needs — see that file for the `${{ secrets.NAME }}`
+      # convention. Each referenced secret is named explicitly below
+      # (zizmor flags toJSON(secrets) — dumping every repo secret at once —
+      # as overprovisioned; naming each one keeps only what's actually used
+      # in scope). Adding a new secret-sourced var means a line here *and*
+      # in the template. Fails fast, before build/test, if a referenced
+      # secret isn't actually set.
+      - name: Validate required secrets are present
+        env:
+          WANIKANI_API_KEY: ${{ secrets.WANIKANI_API_KEY }}
+        run: |
+          set -euo pipefail
+          missing=()
+          while IFS=$'\t' read -r key raw; do
+            if [[ "$raw" =~ ^\$\{\{[[:space:]]*secrets\.([A-Za-z0-9_]+)[[:space:]]*\}\}$ ]]; then
+              name="${BASH_REMATCH[1]}"
+              value="${!name:-}"
+              [ -z "$value" ] && missing+=("$name (for $key)")
+            fi
+          done < <(yq -o=json '.' .github/prod.template.yaml | jq -r 'to_entries[] | [.key, .value] | @tsv')
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secret(s): ${missing[*]}. Make sure each is set in the repo's secrets AND named in this workflow's env: block."
+            exit 1
+          fi
+
       - name: Scan for secrets (gitleaks)
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
@@ -52,6 +78,26 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: d1 migrations apply hiragana-db --remote
+
+      # Applied before deploying so the deployment created below picks up
+      # any change immediately — project-level secrets/vars only take
+      # effect for deployments created after they're set.
+      - name: Apply config to Cloudflare Pages
+        env:
+          WANIKANI_API_KEY: ${{ secrets.WANIKANI_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          while IFS=$'\t' read -r key raw; do
+            if [[ "$raw" =~ ^\$\{\{[[:space:]]*secrets\.([A-Za-z0-9_]+)[[:space:]]*\}\}$ ]]; then
+              value="${!BASH_REMATCH[1]}"
+            else
+              value="$raw"
+            fi
+            echo "::add-mask::$value"
+            printf '%s' "$value" | npx wrangler pages secret put "$key" --project-name=n5
+          done < <(yq -o=json '.' .github/prod.template.yaml | jq -r 'to_entries[] | [.key, .value] | @tsv')
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0

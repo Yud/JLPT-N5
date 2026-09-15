@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "db:migrate:local": "wrangler d1 migrations apply hiragana-db --local",
-    "dev:api": "npm run build && wrangler pages dev dist"
+    "dev:api": "npm run build && wrangler pages dev dist",
+    "sync:wanikani": "node scripts/sync-wanikani-words.mjs"
   },
   "dependencies": {
     "@nuxt/ui": "4.10.0",

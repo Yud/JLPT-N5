@@ -7,6 +7,7 @@ import KatakanaFlashcards from './components/KatakanaFlashcards.vue'
 import VocabReference from './components/VocabReference.vue'
 import VocabFlashcards from './components/VocabFlashcards.vue'
 import KanjiReferenceTables from './components/KanjiReferenceTables.vue'
+import ListeningQuiz from './components/ListeningQuiz.vue'
 import TextToSpeech from './components/TextToSpeech.vue'
 
 // meta.group clusters routes into one nav dropdown per pillar (Hiragana /
@@ -64,6 +65,15 @@ export const routes = [
     name: 'kanji-reference',
     component: KanjiReferenceTables,
     meta: { group: 'Kanji', label: 'Reference' },
+  },
+  // Words cached from WaniKani (scripts/sync-wanikani-words.mjs) at or above
+  // a given SRS stage: hear the pronunciation audio, type the English
+  // meaning. Lives in the Kanji group alongside the reference table.
+  {
+    path: '/listening-quiz',
+    name: 'listening-quiz',
+    component: ListeningQuiz,
+    meta: { group: 'Kanji', label: 'Listening Quiz' },
   },
   // No group — a standalone tool, not tied to any one pillar, so it gets
   // its own flat top-level nav item instead of living in a dropdown.
