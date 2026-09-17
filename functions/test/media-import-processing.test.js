@@ -55,6 +55,24 @@ describe('processMediaFile', () => {
     expect(card.back).toBe(`Back <img src="/api/media/${imageAsset.id}">`)
   })
 
+  it('treats a missing temp upload as already-done, not an error, when a media_assets row already exists (safe step retry)', async () => {
+    // A Workflow step retries its whole callback from the top on any
+    // transient failure — a file that already finished earlier in the same
+    // failed-and-retried attempt (including its temp-object cleanup) looks
+    // exactly like this on the retry. It must not be treated as a missing
+    // upload, or one flaky file aborts every other file's already-good
+    // work in the same chunk.
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1, 2, 3]))
+    const first = await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
+    expect(await env.MEDIA.get(tempMediaKey('222', 'a.mp3'))).toBeNull() // confirms the temp really is gone now
+
+    const retry = await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
+    expect(retry).toEqual({ filename: 'a.mp3', mediaAssetId: first.mediaAssetId, alreadyProcessed: true })
+
+    const storedObject = await env.MEDIA.get(first.mediaAssetId)
+    expect(new Uint8Array(await storedObject.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
+  })
+
   it('reuses the same media asset id when reprocessing the same filename for a deck', async () => {
     await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1]))
     await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })

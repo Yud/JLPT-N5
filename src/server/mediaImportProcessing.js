@@ -57,17 +57,25 @@ export class MissingUploadError extends Error {}
 export async function processMediaFile({ db, mediaBucket, deckId, filename }) {
   const tempKey = tempMediaKey(deckId, filename)
   const tempObject = await mediaBucket.get(tempKey)
-  if (!tempObject) {
-    throw new MissingUploadError(`No uploaded media found for ${deckId}/${filename}`)
-  }
-
-  const bytes = await tempObject.arrayBuffer()
-  const contentType = contentTypeFor(filename)
 
   const existing = await db
     .prepare('SELECT id FROM media_assets WHERE deck_id = ? AND filename = ?')
     .bind(deckId, filename)
     .first()
+
+  if (!tempObject) {
+    // A Workflow step retries its *entire* callback from the top on any
+    // transient failure — if this file already completed (including its
+    // temp-object cleanup below) earlier in the same failed-and-retried
+    // step, its temp key is legitimately gone. That's success, not
+    // failure: only a file with no existing row either was genuinely never
+    // uploaded.
+    if (existing) return { filename, mediaAssetId: existing.id, alreadyProcessed: true }
+    throw new MissingUploadError(`No uploaded media found for ${deckId}/${filename}`)
+  }
+
+  const bytes = await tempObject.arrayBuffer()
+  const contentType = contentTypeFor(filename)
   const mediaAssetId = existing?.id ?? crypto.randomUUID()
 
   await mediaBucket.put(mediaAssetId, bytes, { httpMetadata: { contentType } })
