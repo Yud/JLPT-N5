@@ -95,6 +95,17 @@ jobs:
             npx wrangler r2 bucket create hiragana-media
           fi
 
+      # Deployed before the Pages project below so the service-binding
+      # target (MEDIA_IMPORT_WORKFLOW_TRIGGER, wrangler.toml) already exists
+      # when that deployment picks up its config.
+      - name: Deploy media-import Workflow worker
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
+          workingDirectory: workflows/anki-import
+
       # Applied before deploying so the deployment created below picks up
       # any change immediately — project-level secrets/vars only take
       # effect for deployments created after they're set.
