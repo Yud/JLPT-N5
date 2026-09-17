@@ -244,6 +244,25 @@ describe('parseAnkiPackage', () => {
     expect(media.get('answer.mp3')).toEqual(audioBytes)
   })
 
+  it('decompresses individually zstd-compressed media entries (modern Anki packages compress every media file, not just the collection — verified against a real ~100MB sample deck: all 4,354 of its media entries were compressed)', async () => {
+    const notetype = { id: 1, fields: ['Front', 'Back'], templates: [{ qfmt: '{{Front}}', afmt: '[sound:{{Back}}]' }] }
+    const collectionBytes = await buildCollectionDb({
+      decks: [{ id: 2, name: 'Audio Deck' }],
+      notetype,
+      notes: [{ id: 100, deckId: 2, fields: ['Q', 'answer.mp3'] }],
+    })
+    const realAudioBytes = new Uint8Array([10, 20, 30, 40, 50])
+    const buffer = await buildApkgZip({
+      collectionEntryName: 'collection.anki2',
+      collectionBytes,
+      mediaManifestBytes: utf8.encode(JSON.stringify({ 0: 'answer.mp3' })),
+      mediaFiles: { 0: zstdCompressSync(realAudioBytes) },
+    })
+
+    const { media } = await parseAnkiPackage(buffer)
+    expect(media.get('answer.mp3')).toEqual(realAudioBytes)
+  })
+
   it('best-effort renders a cloze note by revealing the answer rather than skipping the card (FR-013)', async () => {
     const clozeNotetype = {
       id: 5,

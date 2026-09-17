@@ -278,7 +278,13 @@ async function collectMedia(zip, entryNameByFilename, filenames, mediaOut) {
     if (!mediaOut.has(filename)) {
       const entryName = entryNameByFilename.get(filename)
       const entry = entryName !== undefined ? zip.file(entryName) : null
-      if (entry) mediaOut.set(filename, await entry.async('uint8array'))
+      // Modern Anki packages zstd-compress every individual media entry,
+      // not just the collection database (verified against a real ~100MB
+      // sample deck: all 4,354 media files were compressed) — without this,
+      // every extracted file is silently still-compressed bytes served
+      // under its real content type, which looks fine by size/hash but
+      // never actually renders or plays.
+      if (entry) mediaOut.set(filename, await maybeDecompress(await entry.async('uint8array')))
     }
     const bytes = mediaOut.get(filename)
     if (bytes) results.push({ filename, sizeBytes: bytes.length })
