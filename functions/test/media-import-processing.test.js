@@ -73,16 +73,45 @@ describe('processMediaFile', () => {
     expect(new Uint8Array(await storedObject.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
   })
 
-  it('reuses the same media asset id when reprocessing the same filename for a deck', async () => {
-    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1]))
+  it('reuses the same media asset id when reprocessing the same unchanged content for a deck', async () => {
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1, 2, 3]))
     await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
     const first = await env.DB.prepare('SELECT id FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()
 
-    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1, 2]))
+    // Same byte length as before — same logical content, just re-run.
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([9, 9, 9]))
     await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
     const second = await env.DB.prepare('SELECT id, size_bytes FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()
 
     expect(second.id).toBe(first.id)
-    expect(second.size_bytes).toBe(2)
+  })
+
+  it('assigns a new media asset id when the content actually changes, and cleans up the superseded object', async () => {
+    // A same-URL content swap would otherwise be invisible to any client
+    // that already cached GET /api/media/:id's "immutable" response — this
+    // is exactly what this session's zstd-decompress fix ran into in
+    // production (every file's byte length changed after the fix).
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1, 2, 3]))
+    const first = await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
+
+    // In the real system, functions/api/decks/import.js runs before every
+    // media-processing pass and resets a changed file's card text back to
+    // the raw filename (it only reapplies a rewrite for media it's sure is
+    // unchanged) — reproduce that here rather than leaving the previous
+    // pass's URL in place, which processMediaFile's instr()-based lookup
+    // would no longer find.
+    await env.DB.prepare('UPDATE cards SET front = ? WHERE id = ?').bind('Front [sound:a.mp3]', 'imported-222-1').run()
+
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1, 2, 3, 4, 5]))
+    const second = await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
+
+    expect(second.mediaAssetId).not.toBe(first.mediaAssetId)
+    const row = await env.DB.prepare('SELECT id, size_bytes FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()
+    expect(row).toEqual({ id: second.mediaAssetId, size_bytes: 5 })
+    expect(await env.MEDIA.get(first.mediaAssetId)).toBeNull() // old object cleaned up, not orphaned
+    expect(await env.MEDIA.get(second.mediaAssetId)).not.toBeNull()
+
+    const card = await env.DB.prepare('SELECT * FROM cards WHERE id = ?').bind('imported-222-1').first()
+    expect(card.front).toBe(`Front [sound:/api/media/${second.mediaAssetId}]`)
   })
 })

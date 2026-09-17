@@ -59,7 +59,7 @@ export async function processMediaFile({ db, mediaBucket, deckId, filename }) {
   const tempObject = await mediaBucket.get(tempKey)
 
   const existing = await db
-    .prepare('SELECT id FROM media_assets WHERE deck_id = ? AND filename = ?')
+    .prepare('SELECT id, size_bytes FROM media_assets WHERE deck_id = ? AND filename = ?')
     .bind(deckId, filename)
     .first()
 
@@ -76,7 +76,17 @@ export async function processMediaFile({ db, mediaBucket, deckId, filename }) {
 
   const bytes = await tempObject.arrayBuffer()
   const contentType = contentTypeFor(filename)
-  const mediaAssetId = existing?.id ?? crypto.randomUUID()
+  // Reusing the existing id is only correct when the content actually
+  // hasn't changed — GET /api/media/:id serves it with an "immutable"
+  // cache header, promising a given id's bytes never change. Reuse it for
+  // a same-content re-run (the self-heal case above, or a harmless
+  // re-upload of identical bytes); mint a fresh id whenever the size
+  // differs from what's on record, so a real content change (e.g. this
+  // session's zstd-decompress fix suddenly changing every file's byte
+  // length) gets a new URL instead of silently rewriting an old one that
+  // browsers may already have cached.
+  const contentUnchanged = existing?.size_bytes === bytes.byteLength
+  const mediaAssetId = contentUnchanged ? existing.id : crypto.randomUUID()
 
   await mediaBucket.put(mediaAssetId, bytes, { httpMetadata: { contentType } })
 
@@ -84,10 +94,14 @@ export async function processMediaFile({ db, mediaBucket, deckId, filename }) {
     .prepare(
       `INSERT INTO media_assets (id, deck_id, filename, content_type, size_bytes)
        VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT (deck_id, filename) DO UPDATE SET content_type = excluded.content_type, size_bytes = excluded.size_bytes`
+       ON CONFLICT (deck_id, filename) DO UPDATE SET id = excluded.id, content_type = excluded.content_type, size_bytes = excluded.size_bytes`
     )
     .bind(mediaAssetId, deckId, filename, contentType, bytes.byteLength)
     .run()
+
+  if (existing && existing.id !== mediaAssetId) {
+    await mediaBucket.delete(existing.id) // superseded by the fresh id above — otherwise an orphaned, unreferenced object
+  }
 
   const mediaUrl = `/api/media/${mediaAssetId}`
   // instr(), not LIKE '%...%': D1 rejects long/complex LIKE patterns ("LIKE
