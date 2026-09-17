@@ -10,12 +10,6 @@ export default defineConfig({
   // Nuxt UI's own dark-mode state management — useTheme.js already owns
   // that (see style.css for how the two are wired together).
   plugins: [vue(), ui({ colorMode: false })],
-  // sql.js's dist/sql-wasm.js resolves its .wasm asset relative to
-  // import.meta.url at runtime; Vite's dependency pre-bundling rewrites
-  // that in a way that breaks the lookup (manifests as an ENOENT for
-  // sql-wasm.wasm), so it's excluded from pre-bundling — see
-  // src/data/ankiImport.js.
-  optimizeDeps: { exclude: ['sql.js'] },
   test: {
     name: 'app',
     environment: 'jsdom',
