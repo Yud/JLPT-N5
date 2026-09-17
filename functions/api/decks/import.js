@@ -60,6 +60,13 @@ export async function onRequestPost(context) {
   ]
 
   const mediaNeeded = new Set()
+  // Caches, per filename, whether its recorded media_assets row's R2 object
+  // was actually confirmed present — at most one R2 head() per unique
+  // filename regardless of how many cards reference it, so a deck with
+  // media shared across many cards doesn't multiply into an excessive
+  // subrequest count.
+  const r2ExistenceByFilename = new Map()
+
   for (const card of body.cards) {
     if (typeof card.ankiNoteId !== 'number' || typeof card.front !== 'string' || typeof card.back !== 'string') {
       return new Response('Each card needs ankiNoteId (number), front (string), back (string)', { status: 400 })
@@ -68,12 +75,27 @@ export async function onRequestPost(context) {
     let back = card.back
     for (const media of card.media ?? []) {
       const known = existingMediaByFilename.get(media.filename)
-      if (known === undefined || known.size_bytes !== media.sizeBytes) {
-        mediaNeeded.add(media.filename)
-      } else {
+      let confirmedGood = false
+      if (known !== undefined && known.size_bytes === media.sizeBytes) {
+        if (!r2ExistenceByFilename.has(media.filename)) {
+          // A matching D1 row isn't proof the R2 object actually exists —
+          // a request can die between the two writes (this is exactly how
+          // the old synchronous media endpoint left a deck half-imported
+          // when it hit Cloudflare's CPU-time limit mid-batch). Checking
+          // R2 here means a broken deck self-heals on the next import
+          // attempt instead of silently treating a missing object as
+          // "already there" forever.
+          r2ExistenceByFilename.set(media.filename, Boolean(await context.env.MEDIA.head(known.id)))
+        }
+        confirmedGood = r2ExistenceByFilename.get(media.filename)
+      }
+
+      if (confirmedGood) {
         const url = `/api/media/${known.id}`
         front = rewriteReference(front, media.filename, url)
         back = rewriteReference(back, media.filename, url)
+      } else {
+        mediaNeeded.add(media.filename)
       }
     }
 

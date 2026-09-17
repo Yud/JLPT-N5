@@ -24,6 +24,12 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM decks')
   await env.DB.exec('DELETE FROM cards')
   await env.DB.exec('DELETE FROM media_assets')
+  // R2 isn't reset between tests the way D1 tables are cleared above — tests
+  // that assert on whether a given key exists (the self-healing test below)
+  // need a clean bucket, not leftovers from an earlier test reusing the same
+  // fixed 'asset-1' id.
+  const { objects } = await env.MEDIA.list()
+  await Promise.all(objects.map((object) => env.MEDIA.delete(object.key)))
 })
 
 describe('POST /api/decks/import', () => {
@@ -76,10 +82,27 @@ describe('POST /api/decks/import', () => {
       .prepare('INSERT INTO media_assets (id, deck_id, filename, content_type, size_bytes) VALUES (?, ?, ?, ?, ?)')
       .bind('asset-1', '111', 'a.mp3', 'audio/mpeg', 10)
       .run()
+    await env.MEDIA.put('asset-1', new Uint8Array(10))
 
     const response = await importDeck(SAMPLE_DECK)
     const body = await response.json()
     expect(body.mediaNeeded).toEqual([])
+  })
+
+  it('re-requests media whose D1 row exists but whose R2 object is missing (self-heals a half-finished prior import)', async () => {
+    await importDeck(SAMPLE_DECK)
+    await env.DB
+      .prepare('INSERT INTO media_assets (id, deck_id, filename, content_type, size_bytes) VALUES (?, ?, ?, ?, ?)')
+      .bind('asset-1', '111', 'a.mp3', 'audio/mpeg', 10)
+      .run()
+    // Deliberately no env.MEDIA.put() — the D1 row exists (byte-size
+    // matches) but the R2 object never actually got written, exactly how a
+    // request dying mid-way (e.g. the old CPU-time-limit crash) could leave
+    // things. This must be treated as needing (re-)upload, not skipped.
+
+    const response = await importDeck(SAMPLE_DECK)
+    const body = await response.json()
+    expect(body.mediaNeeded).toEqual(['a.mp3'])
   })
 
   it('re-applies an already-known media URL rewrite on re-import instead of reverting to the raw filename', async () => {
@@ -94,6 +117,7 @@ describe('POST /api/decks/import', () => {
       .prepare('INSERT INTO media_assets (id, deck_id, filename, content_type, size_bytes) VALUES (?, ?, ?, ?, ?)')
       .bind('asset-1', '111', 'a.mp3', 'audio/mpeg', 10)
       .run()
+    await env.MEDIA.put('asset-1', new Uint8Array(10))
     await env.DB
       .prepare('INSERT INTO cards (id, deck_id, anki_note_id, front, back, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
       .bind('imported-111-1', '111', 1, 'Q1', 'A1 [sound:/api/media/asset-1]', Date.now())
