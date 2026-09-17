@@ -7,6 +7,16 @@ import { parseAnkiPackage } from '../data/ankiImport.js'
 // entire deck's upload.
 const MAX_BATCH_BYTES = 20 * 1024 * 1024
 
+// Each file [deckId]/media.js processes costs several D1/R2 subrequests
+// (existence check, R2 put, upsert, referencing-cards lookup, per-card
+// rewrite) *inside the same Worker invocation* — Cloudflare caps that at 50
+// on the Free plan (10,000 on Paid). A byte-size cap alone still let a batch
+// of hundreds of small files (real Anki decks are mostly small audio clips)
+// blow past that and crash with an opaque "Worker threw exception". Capped
+// low enough here to stay safe even on the Free plan, regardless of which
+// plan this ends up deployed on.
+const MAX_BATCH_FILES = 8
+
 function batchFilenames(filenames, mediaByFilename) {
   const batches = []
   let current = []
@@ -14,7 +24,7 @@ function batchFilenames(filenames, mediaByFilename) {
   for (const filename of filenames) {
     const bytes = mediaByFilename.get(filename)
     if (!bytes) continue // referenced in a card but never found in the archive — surfaced as a warning, not a hard failure
-    if (current.length > 0 && currentBytes + bytes.length > MAX_BATCH_BYTES) {
+    if (current.length > 0 && (current.length >= MAX_BATCH_FILES || currentBytes + bytes.length > MAX_BATCH_BYTES)) {
       batches.push(current)
       current = []
       currentBytes = 0
