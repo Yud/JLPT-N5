@@ -1,0 +1,70 @@
+// Unit tests for the per-file logic the media-import Workflow
+// (workflows/anki-import) runs per chunk — extracted into
+// src/server/mediaImportProcessing.js specifically so it's testable here,
+// directly, without needing a live Workflow runtime (mirrors how
+// src/scheduling/scheduler.js is tested apart from its endpoint). The
+// Workflow worker itself is exercised end-to-end by the media-process
+// integration test and by the manual local/staging runs described in the
+// PR — this file covers the D1/R2 logic those runs would otherwise be the
+// only way to catch a regression in.
+import { env } from 'cloudflare:workers'
+import { beforeEach, describe, expect, it } from 'vitest'
+import { MissingUploadError, processMediaFile, tempMediaKey } from '../../src/server/mediaImportProcessing.js'
+
+beforeEach(async () => {
+  await env.DB.exec('DELETE FROM decks')
+  await env.DB.exec('DELETE FROM cards')
+  await env.DB.exec('DELETE FROM media_assets')
+  await env.DB
+    .prepare('INSERT INTO decks (id, anki_deck_id, name, card_count, imported_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind('222', 222, 'Media Deck', 1, Date.now(), Date.now())
+    .run()
+  await env.DB
+    .prepare('INSERT INTO cards (id, deck_id, anki_note_id, front, back, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind('imported-222-1', '222', 1, 'Front [sound:a.mp3]', 'Back <img src="b.jpg">', Date.now())
+    .run()
+})
+
+describe('processMediaFile', () => {
+  it('throws MissingUploadError when the temp upload is missing', async () => {
+    await expect(
+      processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'nope.mp3' })
+    ).rejects.toBeInstanceOf(MissingUploadError)
+  })
+
+  it('moves the temp upload to its final key, upserts a MediaAsset row, rewrites referencing cards, and deletes the temp object', async () => {
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1, 2, 3]))
+    await env.MEDIA.put(tempMediaKey('222', 'b.jpg'), new Uint8Array([4, 5]))
+
+    await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
+    await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'b.jpg' })
+
+    const { results: assets } = await env.DB.prepare('SELECT * FROM media_assets WHERE deck_id = ?').bind('222').all()
+    expect(assets).toHaveLength(2)
+
+    const audioAsset = assets.find((a) => a.filename === 'a.mp3')
+    expect(audioAsset.content_type).toBe('audio/mpeg')
+    expect(audioAsset.size_bytes).toBe(3)
+    const storedObject = await env.MEDIA.get(audioAsset.id)
+    expect(new Uint8Array(await storedObject.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
+    expect(await env.MEDIA.get(tempMediaKey('222', 'a.mp3'))).toBeNull()
+
+    const card = await env.DB.prepare('SELECT * FROM cards WHERE id = ?').bind('imported-222-1').first()
+    expect(card.front).toBe(`Front [sound:/api/media/${audioAsset.id}]`)
+    const imageAsset = assets.find((a) => a.filename === 'b.jpg')
+    expect(card.back).toBe(`Back <img src="/api/media/${imageAsset.id}">`)
+  })
+
+  it('reuses the same media asset id when reprocessing the same filename for a deck', async () => {
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1]))
+    await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
+    const first = await env.DB.prepare('SELECT id FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()
+
+    await env.MEDIA.put(tempMediaKey('222', 'a.mp3'), new Uint8Array([1, 2]))
+    await processMediaFile({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3' })
+    const second = await env.DB.prepare('SELECT id, size_bytes FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()
+
+    expect(second.id).toBe(first.id)
+    expect(second.size_bytes).toBe(2)
+  })
+})
