@@ -78,6 +78,15 @@ export const routes = [
   // No group — a standalone tool, not tied to any one pillar, so it gets
   // its own flat top-level nav item instead of living in a dropdown.
   { path: '/speak', name: 'speak', component: TextToSpeech, meta: { label: 'Text to Speech' } },
+  // Imported Anki decks (specs/003-anki-deck-import) — a standalone pillar
+  // like Text to Speech, not nested under an existing one. /decks/:deckId
+  // has no nav entry of its own (reached by clicking a deck in the manager),
+  // same convention as the :scope sub-routes above. Lazy-loaded: the
+  // zip/SQLite/zstd parsing stack (src/data/ankiImport.js) is only needed by
+  // visitors who actually use this pillar, and is heavy enough (jszip,
+  // sql.js's wasm, fzstd) to keep out of everyone else's initial bundle.
+  { path: '/decks', name: 'decks', component: () => import('./components/DeckManager.vue'), meta: { label: 'Decks' } },
+  { path: '/decks/:deckId', name: 'deck-flashcards', component: () => import('./components/DeckFlashcards.vue') },
 ]
 
 // Hash history (not createWebHistory) so the built dist/index.html keeps

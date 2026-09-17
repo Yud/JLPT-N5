@@ -25,6 +25,10 @@ Thumbs.db
 *.tmp
 *.swp
 
+# Sample/test Anki decks (specs/003-anki-deck-import) — large third-party
+# binaries used for manual verification, not project assets.
+*.apkg
+
 .vscode/*
 !.vscode/extensions.json
 .idea/

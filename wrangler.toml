@@ -6,3 +6,9 @@ compatibility_date = "2026-08-15"
 binding = "DB"
 database_name = "hiragana-db"
 database_id = "1a36e96e-d1ea-42ed-ae89-ad8c3af1c5dd"
+
+# Imported-deck media (audio/images extracted from .apkg files, specs/003-anki-deck-import).
+# The bucket itself is created once, manually: `wrangler r2 bucket create hiragana-media`.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "hiragana-media"

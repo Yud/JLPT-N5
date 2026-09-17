@@ -19,7 +19,22 @@ async function getDue(deck = 'hiragana') {
 // each test starts from a clean review-state table regardless.
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM card_review_state')
+  await env.DB.exec('DELETE FROM decks')
+  await env.DB.exec('DELETE FROM cards')
 })
+
+// specs/003-anki-deck-import, research.md §6: imported card ids (not in the
+// static DECKS registry) must be recognized too, not just built-in ones.
+async function seedImportedCard() {
+  await env.DB
+    .prepare('INSERT INTO decks (id, anki_deck_id, name, card_count, imported_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind('777', 777, 'Imported Deck', 1, Date.now(), Date.now())
+    .run()
+  await env.DB
+    .prepare('INSERT INTO cards (id, deck_id, anki_note_id, front, back, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind('imported-777-1', '777', 1, 'Front', 'Back', Date.now())
+    .run()
+}
 
 describe('GET /api/reviews/due', () => {
   it('rejects requests with no Access identity', async () => {
@@ -79,5 +94,15 @@ describe('POST /api/reviews/:cardId', () => {
     const lapsed = await (await postReview('hiragana-ki', 'again')).json()
     expect(lapsed.repetitions).toBe(0)
     expect(lapsed.lapses).toBe(1)
+  })
+
+  it('accepts an imported card id and reflects it on the next due check for its deck', async () => {
+    await seedImportedCard()
+
+    const reviewResponse = await postReview('imported-777-1', 'good')
+    expect(reviewResponse.status).toBe(200)
+
+    const { cards } = await (await getDue('777')).json()
+    expect(cards).toEqual([{ cardId: 'imported-777-1', status: 'scheduled', dueAt: expect.any(Number) }])
   })
 })

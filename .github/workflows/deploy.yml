@@ -79,6 +79,22 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: d1 migrations apply hiragana-db --remote
 
+      # `wrangler r2 bucket create` errors if the bucket already exists (no
+      # --if-not-exists flag), so this only creates it the first time this
+      # workflow runs after the binding was added (specs/003-anki-deck-import)
+      # and is a no-op on every run after that.
+      - name: Ensure R2 bucket exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if npx wrangler r2 bucket list | grep -qw hiragana-media; then
+            echo "R2 bucket hiragana-media already exists"
+          else
+            npx wrangler r2 bucket create hiragana-media
+          fi
+
       # Applied before deploying so the deployment created below picks up
       # any change immediately — project-level secrets/vars only take
       # effect for deployments created after they're set.

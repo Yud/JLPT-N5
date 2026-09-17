@@ -11,8 +11,14 @@ export async function onRequestGet(context) {
   if (!email) return new Response('Unauthorized', { status: 401 })
 
   const deck = new URL(context.request.url).searchParams.get('deck')
-  const cardIds = DECKS[deck]
-  if (!cardIds) return new Response(`Unknown deck: ${deck}`, { status: 400 })
+  let cardIds = DECKS[deck]
+  if (!cardIds) {
+    // Not a built-in deck — check whether it's an imported one
+    // (specs/003-anki-deck-import) before giving up.
+    const importedCards = await context.env.DB.prepare('SELECT id FROM cards WHERE deck_id = ?').bind(deck).all()
+    if (importedCards.results.length === 0) return new Response(`Unknown deck: ${deck}`, { status: 400 })
+    cardIds = new Set(importedCards.results.map((row) => row.id))
+  }
 
   // Fetch all of this user's review rows in one unparameterized-by-id query
   // rather than binding one placeholder per card id — D1 caps bound

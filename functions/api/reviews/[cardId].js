@@ -13,7 +13,12 @@ export async function onRequestPost(context) {
   if (!email) return new Response('Unauthorized', { status: 401 })
 
   const { cardId } = context.params
-  if (!ALL_CARD_IDS.has(cardId)) return new Response(`Unknown card: ${cardId}`, { status: 404 })
+  if (!ALL_CARD_IDS.has(cardId)) {
+    // Not a built-in card id — check whether it's an imported one
+    // (specs/003-anki-deck-import) before giving up.
+    const importedCard = await context.env.DB.prepare('SELECT 1 FROM cards WHERE id = ?').bind(cardId).first()
+    if (!importedCard) return new Response(`Unknown card: ${cardId}`, { status: 404 })
+  }
 
   const body = await context.request.json().catch(() => null)
   if (!body || !GRADES.has(body.grade)) {
