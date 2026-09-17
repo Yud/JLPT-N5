@@ -1,0 +1,20 @@
+name = "workflows-anki-import"
+main = "src/index.js"
+compatibility_date = "2026-08-15"
+
+# Same D1/R2 bindings as the main project's wrangler.toml — this worker only
+# ever touches decks/cards/media_assets/media_import_jobs rows and R2 objects
+# that the main project also owns.
+[[d1_databases]]
+binding = "DB"
+database_name = "hiragana-db"
+database_id = "1a36e96e-d1ea-42ed-ae89-ad8c3af1c5dd"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "hiragana-media"
+
+[[workflows]]
+binding = "MEDIA_IMPORT_WORKFLOW"
+name = "media-import-workflow"
+class_name = "MediaImportWorkflow"
