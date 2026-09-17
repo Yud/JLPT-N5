@@ -6,7 +6,11 @@
       <h3 class="mb-2 font-medium">Import an Anki deck</h3>
       <p class="mb-3 text-sm text-muted">Upload a <code>.apkg</code> export — its cards and media become a new deck here.</p>
       <input ref="fileInput" type="file" accept=".apkg" class="hidden" @change="onFileChosen" />
-      <AppButton variant="primary" :disabled="importer.status.value === 'parsing' || importer.status.value === 'uploading'" @click="fileInput.click()">
+      <AppButton
+        variant="primary"
+        :disabled="['parsing', 'uploading', 'processing'].includes(importer.status.value)"
+        @click="fileInput.click()"
+      >
         Choose file…
       </AppButton>
 
@@ -16,6 +20,10 @@
         <template v-if="importer.progress.value.mediaTotal > 0">
           (media {{ importer.progress.value.mediaUploaded }} / {{ importer.progress.value.mediaTotal }})
         </template>
+      </div>
+      <div v-else-if="importer.status.value === 'processing'" class="mt-3 text-sm text-muted">
+        Processing media {{ importer.progress.value.mediaProcessed }} / {{ importer.progress.value.mediaProcessTotal }} (deck
+        {{ importer.progress.value.decksImported + 1 }} of {{ importer.progress.value.decksTotal }})
       </div>
       <p v-else-if="importer.status.value === 'done'" class="mt-3 text-sm text-green-700 dark:text-green-400">
         {{ importer.message.value }}

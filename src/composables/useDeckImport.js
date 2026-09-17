@@ -4,18 +4,12 @@ import { parseAnkiPackage } from '../data/ankiImport.js'
 // Stay comfortably under Cloudflare's per-request body cap (100MB on
 // Free/Pro — research.md §3) rather than uploading a deck's media in one
 // request; batches also let a slow/failed request retry without redoing an
-// entire deck's upload.
+// entire deck's upload. .../media/upload.js is now a pure R2 put per file
+// (no D1 calls), so unlike before there's no separate per-batch file-count
+// cap needed to stay under a subrequest budget — a byte-size cap is enough.
 const MAX_BATCH_BYTES = 20 * 1024 * 1024
 
-// Each file [deckId]/media.js processes costs several D1/R2 subrequests
-// (existence check, R2 put, upsert, referencing-cards lookup, per-card
-// rewrite) *inside the same Worker invocation* — Cloudflare caps that at 50
-// on the Free plan (10,000 on Paid). A byte-size cap alone still let a batch
-// of hundreds of small files (real Anki decks are mostly small audio clips)
-// blow past that and crash with an opaque "Worker threw exception". Capped
-// low enough here to stay safe even on the Free plan, regardless of which
-// plan this ends up deployed on.
-const MAX_BATCH_FILES = 8
+const POLL_INTERVAL_MS = 1500
 
 function batchFilenames(filenames, mediaByFilename) {
   const batches = []
@@ -24,7 +18,7 @@ function batchFilenames(filenames, mediaByFilename) {
   for (const filename of filenames) {
     const bytes = mediaByFilename.get(filename)
     if (!bytes) continue // referenced in a card but never found in the archive — surfaced as a warning, not a hard failure
-    if (current.length > 0 && (current.length >= MAX_BATCH_FILES || currentBytes + bytes.length > MAX_BATCH_BYTES)) {
+    if (current.length > 0 && currentBytes + bytes.length > MAX_BATCH_BYTES) {
       batches.push(current)
       current = []
       currentBytes = 0
@@ -34,6 +28,10 @@ function batchFilenames(filenames, mediaByFilename) {
   }
   if (current.length > 0) batches.push(current)
   return batches
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 async function postJson(url, body) {
@@ -46,21 +44,50 @@ async function postJson(url, body) {
   return response.json()
 }
 
+// Polls a media_import_jobs row (functions/api/decks/[deckId]/media/jobs/
+// [jobId].js) until the background Workflow (workflows/anki-import) finishes
+// or fails processing this deck's media. onProgress reports { done, total }
+// after each poll so the caller can update its own running totals.
+async function pollMediaJob(deckId, jobId, onProgress) {
+  for (;;) {
+    const response = await fetch(`/api/decks/${deckId}/media/jobs/${jobId}`)
+    if (!response.ok) throw new Error((await response.text()) || `Failed to check media processing status: ${response.status}`)
+    const job = await response.json()
+    onProgress(job.done, job.total)
+
+    if (job.status === 'done') return
+    if (job.status === 'error') throw new Error(job.error || 'Media processing failed.')
+    await sleep(POLL_INTERVAL_MS)
+  }
+}
+
 /**
  * Drives importing an Anki .apkg file (specs/003-anki-deck-import): parses
  * it entirely client-side (src/data/ankiImport.js), then uploads the result
- * to the backend — one deck per Anki sub-deck (FR-011), each deck's media
- * in size-bounded batches (research.md §3) rather than one giant request.
+ * to the backend — one deck per Anki sub-deck (FR-011). Each deck's media is
+ * uploaded in size-bounded batches (research.md §3), then handed to a
+ * background Workflow (workflows/anki-import) to actually process (R2 copy,
+ * media_assets upsert, card rewrite) — that work used to happen
+ * synchronously per upload and crashed production twice at real-world scale
+ * (subrequest cap, then CPU-time cap), so it's now polled to completion
+ * instead of awaited inline.
  */
 export function useDeckImport() {
-  const status = ref('idle') // 'idle' | 'parsing' | 'uploading' | 'done' | 'error'
+  const status = ref('idle') // 'idle' | 'parsing' | 'uploading' | 'processing' | 'done' | 'error'
   const message = ref('')
-  const progress = ref({ decksImported: 0, decksTotal: 0, mediaUploaded: 0, mediaTotal: 0 })
+  const progress = ref({
+    decksImported: 0,
+    decksTotal: 0,
+    mediaUploaded: 0,
+    mediaTotal: 0,
+    mediaProcessed: 0,
+    mediaProcessTotal: 0,
+  })
 
   async function importFile(file) {
     status.value = 'parsing'
     message.value = ''
-    progress.value = { decksImported: 0, decksTotal: 0, mediaUploaded: 0, mediaTotal: 0 }
+    progress.value = { decksImported: 0, decksTotal: 0, mediaUploaded: 0, mediaTotal: 0, mediaProcessed: 0, mediaProcessTotal: 0 }
 
     try {
       const { decks, media } = await parseAnkiPackage(await file.arrayBuffer())
@@ -84,13 +111,28 @@ export function useDeckImport() {
         totalCards += deck.cards.length
 
         progress.value.mediaTotal += mediaNeeded.length
+        status.value = 'uploading'
         for (const batch of batchFilenames(mediaNeeded, media)) {
           const formData = new FormData()
           for (const filename of batch) formData.append(filename, new Blob([media.get(filename)]), filename)
-          const response = await fetch(`/api/decks/${deckId}/media`, { method: 'POST', body: formData })
+          const response = await fetch(`/api/decks/${deckId}/media/upload`, { method: 'POST', body: formData })
           if (!response.ok) throw new Error((await response.text()) || `Media upload failed: ${response.status}`)
           const { stored } = await response.json()
           progress.value.mediaUploaded += stored.length
+        }
+
+        if (mediaNeeded.length > 0) {
+          status.value = 'processing'
+          progress.value.mediaProcessTotal += mediaNeeded.length
+          const { jobId } = await postJson(`/api/decks/${deckId}/media/process`, { filenames: mediaNeeded })
+          if (jobId) {
+            const alreadyProcessed = progress.value.mediaProcessed
+            await pollMediaJob(deckId, jobId, (done) => {
+              progress.value.mediaProcessed = alreadyProcessed + done
+            })
+          } else {
+            progress.value.mediaProcessed += mediaNeeded.length
+          }
         }
 
         progress.value.decksImported += 1
