@@ -30,6 +30,7 @@ export async function onRequestDelete(context) {
   // card count — so this must run before `cards` itself is deleted below.
   await db.batch([
     db.prepare('DELETE FROM card_review_state WHERE card_id IN (SELECT id FROM cards WHERE deck_id = ?)').bind(deckId),
+    db.prepare('DELETE FROM media_import_jobs WHERE deck_id = ?').bind(deckId),
     db.prepare('DELETE FROM media_assets WHERE deck_id = ?').bind(deckId),
     db.prepare('DELETE FROM cards WHERE deck_id = ?').bind(deckId),
     db.prepare('DELETE FROM decks WHERE id = ?').bind(deckId),

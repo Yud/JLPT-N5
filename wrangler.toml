@@ -12,3 +12,12 @@ database_id = "1a36e96e-d1ea-42ed-ae89-ad8c3af1c5dd"
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "hiragana-media"
+
+# Pages Functions can't define a Workflow directly (WorkflowEntrypoint must
+# live in its own Worker) — this triggers the one in workflows/anki-import,
+# deployed as its own project (see .github/workflows/deploy.yml). Local dev:
+# run `wrangler dev` in workflows/anki-import alongside `wrangler pages dev`
+# here; wrangler's local dev registry resolves the binding to that process.
+[[services]]
+binding = "MEDIA_IMPORT_WORKFLOW_TRIGGER"
+service = "workflows-anki-import"
