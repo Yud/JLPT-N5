@@ -70,9 +70,13 @@ export async function onRequestPost(context) {
       .run()
 
     const mediaUrl = `/api/media/${mediaAssetId}`
+    // instr(), not LIKE '%...%': D1 rejects long/complex LIKE patterns
+    // ("LIKE or GLOB pattern too complex") for the tune, content-hash-style
+    // filenames real Anki media commonly uses — instr() is a plain
+    // substring check, not pattern matching, so it has no such limit.
     const referencingCards = await db
-      .prepare('SELECT id, front, back FROM cards WHERE deck_id = ? AND (front LIKE ? OR back LIKE ?)')
-      .bind(deckId, `%${filename}%`, `%${filename}%`)
+      .prepare('SELECT id, front, back FROM cards WHERE deck_id = ? AND (instr(front, ?) > 0 OR instr(back, ?) > 0)')
+      .bind(deckId, filename, filename)
       .all()
     for (const card of referencingCards.results) {
       await db

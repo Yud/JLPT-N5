@@ -81,4 +81,34 @@ describe('POST /api/decks/import', () => {
     const body = await response.json()
     expect(body.mediaNeeded).toEqual([])
   })
+
+  it('re-applies an already-known media URL rewrite on re-import instead of reverting to the raw filename', async () => {
+    // Simulates the state after a first import + successful media upload:
+    // the media_assets row exists, and the card's stored front/back already
+    // has the filename rewritten to its /api/media/<id> URL.
+    await env.DB
+      .prepare('INSERT INTO decks (id, anki_deck_id, name, card_count, imported_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind('111', 111, 'Sample Deck', 1, Date.now(), Date.now())
+      .run()
+    await env.DB
+      .prepare('INSERT INTO media_assets (id, deck_id, filename, content_type, size_bytes) VALUES (?, ?, ?, ?, ?)')
+      .bind('asset-1', '111', 'a.mp3', 'audio/mpeg', 10)
+      .run()
+    await env.DB
+      .prepare('INSERT INTO cards (id, deck_id, anki_note_id, front, back, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind('imported-111-1', '111', 1, 'Q1', 'A1 [sound:/api/media/asset-1]', Date.now())
+      .run()
+
+    // Re-importing sends the client's freshly re-parsed HTML, which still
+    // references the raw filename — the endpoint must reapply the rewrite
+    // rather than overwrite it away.
+    await importDeck({
+      ankiDeckId: 111,
+      deckName: 'Sample Deck',
+      cards: [{ ankiNoteId: 1, front: 'Q1', back: 'A1 [sound:a.mp3]', media: [{ filename: 'a.mp3', sizeBytes: 10 }] }],
+    })
+
+    const card = await env.DB.prepare('SELECT * FROM cards WHERE id = ?').bind('imported-111-1').first()
+    expect(card.back).toBe('A1 [sound:/api/media/asset-1]')
+  })
 })

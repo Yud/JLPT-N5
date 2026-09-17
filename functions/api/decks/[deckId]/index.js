@@ -13,27 +13,27 @@ export async function onRequestDelete(context) {
   const deck = await db.prepare('SELECT id FROM decks WHERE id = ?').bind(deckId).first()
   if (!deck) return new Response(`Unknown deck: ${deckId}`, { status: 404 })
 
-  const [{ results: mediaRows }, { results: cardRows }] = await Promise.all([
-    db.prepare('SELECT id FROM media_assets WHERE deck_id = ?').bind(deckId).all(),
-    db.prepare('SELECT id FROM cards WHERE deck_id = ?').bind(deckId).all(),
-  ])
+  const { results: mediaRows } = await db.prepare('SELECT id FROM media_assets WHERE deck_id = ?').bind(deckId).all()
 
-  if (mediaRows.length > 0) await context.env.MEDIA.delete(mediaRows.map((row) => row.id))
+  // Chunked, not one call: R2's delete() takes an array, but a deck can
+  // have thousands of media assets and this shouldn't assume an unbounded
+  // batch size.
+  const R2_DELETE_BATCH_SIZE = 1000
+  for (let i = 0; i < mediaRows.length; i += R2_DELETE_BATCH_SIZE) {
+    const keys = mediaRows.slice(i, i + R2_DELETE_BATCH_SIZE).map((row) => row.id)
+    await context.env.MEDIA.delete(keys)
+  }
 
-  const writes = [
+  // card_review_state cleanup uses a subquery against `cards` rather than
+  // an explicit id list — D1 caps bound parameters at 100 per query (same
+  // limit functions/api/reviews/due.js works around), well below a deck's
+  // card count — so this must run before `cards` itself is deleted below.
+  await db.batch([
+    db.prepare('DELETE FROM card_review_state WHERE card_id IN (SELECT id FROM cards WHERE deck_id = ?)').bind(deckId),
     db.prepare('DELETE FROM media_assets WHERE deck_id = ?').bind(deckId),
     db.prepare('DELETE FROM cards WHERE deck_id = ?').bind(deckId),
     db.prepare('DELETE FROM decks WHERE id = ?').bind(deckId),
-  ]
-  if (cardRows.length > 0) {
-    const placeholders = cardRows.map(() => '?').join(', ')
-    writes.push(
-      db
-        .prepare(`DELETE FROM card_review_state WHERE card_id IN (${placeholders})`)
-        .bind(...cardRows.map((row) => row.id))
-    )
-  }
-  await db.batch(writes)
+  ])
 
   return new Response(null, { status: 204 })
 }

@@ -10,6 +10,18 @@ function cardId(deckId, ankiNoteId) {
   return `imported-${deckId}-${ankiNoteId}`
 }
 
+// Mirrors [deckId]/media.js's rewrite — needed here too because re-importing
+// a deck upserts front/back from the client's freshly-parsed (still
+// filename-referencing) HTML, which would otherwise clobber the URL
+// rewrites a *previous* import's media upload already applied, for any
+// filename that hasn't actually changed since (FR-012).
+function rewriteReference(text, filename, url) {
+  return text
+    .replaceAll(`[sound:${filename}]`, `[sound:${url}]`)
+    .replaceAll(`src="${filename}"`, `src="${url}"`)
+    .replaceAll(`src='${filename}'`, `src='${url}'`)
+}
+
 export async function onRequestPost(context) {
   const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
   if (!email) return new Response('Unauthorized', { status: 401 })
@@ -29,10 +41,10 @@ export async function onRequestPost(context) {
   const db = context.env.DB
 
   const existingMedia = await db
-    .prepare('SELECT filename, size_bytes FROM media_assets WHERE deck_id = ?')
+    .prepare('SELECT id, filename, size_bytes FROM media_assets WHERE deck_id = ?')
     .bind(deckId)
     .all()
-  const existingMediaByFilename = new Map(existingMedia.results.map((row) => [row.filename, row.size_bytes]))
+  const existingMediaByFilename = new Map(existingMedia.results.map((row) => [row.filename, row]))
 
   const writes = [
     db
@@ -52,6 +64,19 @@ export async function onRequestPost(context) {
     if (typeof card.ankiNoteId !== 'number' || typeof card.front !== 'string' || typeof card.back !== 'string') {
       return new Response('Each card needs ankiNoteId (number), front (string), back (string)', { status: 400 })
     }
+    let front = card.front
+    let back = card.back
+    for (const media of card.media ?? []) {
+      const known = existingMediaByFilename.get(media.filename)
+      if (known === undefined || known.size_bytes !== media.sizeBytes) {
+        mediaNeeded.add(media.filename)
+      } else {
+        const url = `/api/media/${known.id}`
+        front = rewriteReference(front, media.filename, url)
+        back = rewriteReference(back, media.filename, url)
+      }
+    }
+
     writes.push(
       db
         .prepare(
@@ -62,12 +87,8 @@ export async function onRequestPost(context) {
              back = excluded.back,
              updated_at = excluded.updated_at`
         )
-        .bind(cardId(deckId, card.ankiNoteId), deckId, card.ankiNoteId, card.front, card.back, now)
+        .bind(cardId(deckId, card.ankiNoteId), deckId, card.ankiNoteId, front, back, now)
     )
-    for (const media of card.media ?? []) {
-      const knownSize = existingMediaByFilename.get(media.filename)
-      if (knownSize === undefined || knownSize !== media.sizeBytes) mediaNeeded.add(media.filename)
-    }
   }
 
   await db.batch(writes)
