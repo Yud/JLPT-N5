@@ -52,17 +52,23 @@ import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 // single Worker invocation" when processMediaChunk still wrote one file at a
 // time. mediaImportProcessing.js now batches a whole chunk's D1 writes into
 // one db.batch() call (2 round-trips total per step, regardless of chunk
-// size), so MEDIA_CHUNK_SIZE is no longer constrained by D1's query count —
-// only by CPU time and the 1 MiB step-result cap. RENDER_CHUNK_SIZE was
-// never at risk the same way: upsertCardChunk already batched its writes
-// from the start.
+// size), so MEDIA_CHUNK_SIZE is no longer constrained by D1's query COUNT —
+// only by CPU time, the 1 MiB step-result cap, and one more D1 limit: "Maximum
+// bound parameters per query: 100" (same limits page). processMediaChunk's
+// existence-check SELECT binds one `?` per filename in the chunk plus one for
+// deckId, so MEDIA_CHUNK_SIZE has to stay comfortably under 100 or that one
+// query alone fails with "D1_ERROR: too many SQL variables" — hit in
+// production at MEDIA_CHUNK_SIZE=100 (100 filenames + 1 deckId = 101).
+// RENDER_CHUNK_SIZE was never at risk from either D1 limit: upsertCardChunk's
+// batch has no single query whose bound-parameter count scales with the
+// whole chunk — each INSERT only binds that one card's own values.
 //
 // Re-verify against Cloudflare Workers Observability after deploying, not
 // just local timing — local dev doesn't enforce real CPU-time accounting or
 // D1's subrequest cap the same way, which is why both the original
 // (pre-fflate) design and, separately, the un-batched media writes passed
 // local end-to-end testing but still failed in production.
-const MEDIA_CHUNK_SIZE = 100
+const MEDIA_CHUNK_SIZE = 90
 const RENDER_CHUNK_SIZE = 150
 
 export class DeckImportWorkflow extends WorkflowEntrypoint {

@@ -59,6 +59,30 @@ export function contentTypeFor(filename) {
  * per file, in the same order: `{ filename, skipped: true }` or
  * `{ filename, mediaAssetId }`.
  */
+// D1 caps bound parameters at 100 per query ("Maximum bound parameters per
+// query", D1's own limits page) — the existence-check SELECT below binds one
+// `?` per filename plus one for deckId, so it's batched in groups of this
+// size (comfortably under 100 with deckId's +1) rather than trusting the
+// caller's chunk size to stay small enough on its own. Independent of
+// MEDIA_CHUNK_SIZE (workflows/anki-import/src/index.js) — that constant is
+// sized for CPU time and D1's separate 50-queries-per-invocation cap; this
+// one exists so processMediaChunk stays correct even if that changes.
+const MAX_FILENAMES_PER_EXISTENCE_QUERY = 90
+
+async function fetchExistingByFilename(db, deckId, filenames) {
+  const existingByFilename = new Map()
+  for (let i = 0; i < filenames.length; i += MAX_FILENAMES_PER_EXISTENCE_QUERY) {
+    const batch = filenames.slice(i, i + MAX_FILENAMES_PER_EXISTENCE_QUERY)
+    const placeholders = batch.map(() => '?').join(', ')
+    const { results: existingRows } = await db
+      .prepare(`SELECT id, filename, size_bytes FROM media_assets WHERE deck_id = ? AND filename IN (${placeholders})`)
+      .bind(deckId, ...batch)
+      .all()
+    for (const row of existingRows) existingByFilename.set(row.filename, row)
+  }
+  return existingByFilename
+}
+
 export async function processMediaChunk({ db, mediaBucket, deckId, files }) {
   const filenames = files.filter((f) => f.bytes !== null).map((f) => f.filename)
 
@@ -69,15 +93,7 @@ export async function processMediaChunk({ db, mediaBucket, deckId, files }) {
   // re-import of an unchanged deck); mint a fresh id whenever the size
   // differs from what's on record, so a real content change gets a new URL
   // instead of silently rewriting one browsers may already have cached.
-  const existingByFilename = new Map()
-  if (filenames.length > 0) {
-    const placeholders = filenames.map(() => '?').join(', ')
-    const { results: existingRows } = await db
-      .prepare(`SELECT id, filename, size_bytes FROM media_assets WHERE deck_id = ? AND filename IN (${placeholders})`)
-      .bind(deckId, ...filenames)
-      .all()
-    for (const row of existingRows) existingByFilename.set(row.filename, row)
-  }
+  const existingByFilename = await fetchExistingByFilename(db, deckId, filenames)
 
   const results = []
   const writes = []
