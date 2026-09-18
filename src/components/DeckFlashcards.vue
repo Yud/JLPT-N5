@@ -23,11 +23,11 @@
           @click="session.reveal()"
         >
           <!-- eslint-disable-next-line vue/no-v-html -- Anki's own card HTML, best-effort rendered (FR-013); media refs already point at this app's own /api/media endpoint -->
-          <div class="card-media" v-html="renderedFront"></div>
+          <div class="card-media" v-html="renderedFront" @click="playSound"></div>
           <template v-if="session.revealed.value">
             <hr class="w-full border-border" />
             <!-- eslint-disable-next-line vue/no-v-html -->
-            <div class="card-media" v-html="renderedBack"></div>
+            <div class="card-media" v-html="renderedBack" @click="playSound"></div>
           </template>
         </button>
 
@@ -67,11 +67,33 @@ const session = shallowRef(null)
 let cachedCards = []
 
 // Anki's `[sound:...]` bracket syntax isn't valid HTML on its own — turn it
-// into a real, playable element. Media `<img src="...">` references already
-// point at this app's /api/media endpoint (rewritten at import time) and
-// need no further transformation.
+// into a compact play button plus a hidden <audio> it controls (playSound
+// below), rather than a full native player — a deck can reference several
+// sounds per card (e.g. word + example sentence), and native <audio
+// controls> is wide enough that two or three of them no longer fit the
+// flashcard tile. Media `<img src="...">` references already point at this
+// app's /api/media endpoint (rewritten at import time) and need no further
+// transformation.
 function renderCardHtml(html) {
-  return html.replace(/\[sound:([^\]]+)\]/g, (_match, url) => `<audio controls src="${url}"></audio>`)
+  return html.replace(
+    /\[sound:([^\]]+)\]/g,
+    (_match, url) =>
+      `<button type="button" class="sound-btn cursor-pointer inline-flex h-8 w-8 items-center justify-center rounded-full border border-border bg-surface text-base transition-colors hover:bg-surface-hover" aria-label="Play audio">🔊</button><audio src="${url}" class="hidden"></audio>`
+  )
+}
+
+// Event-delegated instead of an inline onclick in the string above (keeps
+// executable JS out of the v-html'd markup) — relies on the <audio> always
+// immediately following its .sound-btn in renderCardHtml's output. Clicks
+// elsewhere in the card intentionally aren't touched here, so they still
+// bubble up to the flip button's own @click.
+function playSound(event) {
+  const button = event.target.closest('.sound-btn')
+  if (!button) return
+  event.stopPropagation()
+  const audio = button.nextElementSibling
+  audio.currentTime = 0
+  audio.play()
 }
 
 const renderedFront = computed(() => (session.value?.currentCharacter.value ? renderCardHtml(session.value.currentCharacter.value.front) : ''))
@@ -116,8 +138,9 @@ onActivated(() => {
    past the viewport. Capped and centered here instead of at import time so
    the original media stays untouched (e.g. for a future full-size view). */
 .card-media :deep(img) {
+  height: 150px;
+  width: auto;
   max-width: 100%;
-  max-height: 12rem;
   object-fit: contain;
   margin-inline: auto;
 }
