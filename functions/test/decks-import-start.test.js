@@ -50,6 +50,13 @@ describe('POST /api/decks/import/:jobId/start', () => {
 
     const response = await startImport(jobId)
     expect(response.status).toBe(202)
+    // Regression guard: the client (useDeckImport.js's postJson) always
+    // calls response.json() on this endpoint, including on success — an
+    // empty body here throws "Unexpected end of JSON input" client-side
+    // even though the server-side trigger genuinely succeeded. Awaiting
+    // .json() directly means a parse failure fails this test too, not just
+    // a silent status-code check.
+    expect(await response.json()).toEqual({})
 
     const updated = await env.DB.prepare('SELECT status FROM deck_import_jobs WHERE id = ?').bind(jobId).first()
     expect(updated.status).toBe('processing')

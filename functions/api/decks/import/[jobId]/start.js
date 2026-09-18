@@ -34,5 +34,5 @@ export async function onRequestPost(context) {
     return new Response('Failed to start import', { status: 502 })
   }
 
-  return new Response(null, { status: 202 })
+  return Response.json({}, { status: 202 })
 }
