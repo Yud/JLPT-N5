@@ -85,6 +85,7 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM deck_import_tasks')
   await env.DB.exec('DELETE FROM decks')
   await env.DB.exec('DELETE FROM cards')
+  await env.DB.exec('DELETE FROM card_media_refs')
   await env.DB.exec('DELETE FROM media_assets')
   const { objects } = await env.MEDIA.list()
   await Promise.all(objects.map((object) => env.MEDIA.delete(object.key)))

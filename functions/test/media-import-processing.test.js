@@ -11,6 +11,7 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM decks')
   await env.DB.exec('DELETE FROM cards')
   await env.DB.exec('DELETE FROM media_assets')
+  await env.DB.exec('DELETE FROM card_media_refs')
   const { objects } = await env.MEDIA.list()
   await Promise.all(objects.map((object) => env.MEDIA.delete(object.key)))
 
@@ -21,6 +22,14 @@ beforeEach(async () => {
   await env.DB
     .prepare('INSERT INTO cards (id, deck_id, anki_note_id, front, back, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
     .bind('imported-222-1', '222', 1, 'Front [sound:a.mp3]', 'Back <img src="b.jpg">', Date.now())
+    .run()
+  // processMediaChunk now finds referencing cards via this indexed reverse
+  // lookup (see migrations/0009_create_card_media_refs.sql), not by scanning
+  // every card's text — in the real pipeline, upsertCardChunk populates this
+  // at the same time it writes the card above.
+  await env.DB
+    .prepare('INSERT INTO card_media_refs (deck_id, filename, card_id) VALUES (?, ?, ?), (?, ?, ?)')
+    .bind('222', 'a.mp3', 'imported-222-1', '222', 'b.jpg', 'imported-222-1')
     .run()
 })
 
@@ -81,8 +90,9 @@ describe('processMediaChunk', () => {
     // In the real system, the deck's cards are re-upserted with raw filename
     // references before media processing re-runs (upsertCardChunk always
     // writes the freshly-rendered HTML) — reproduce that here rather than
-    // leaving the previous pass's URL in place, which the instr()-based
-    // lookup below would no longer find.
+    // leaving the previous pass's URL in place. card_media_refs (seeded in
+    // beforeEach) is untouched — it's populated by upsertCardChunk, not by
+    // processMediaChunk, so it stays valid across this re-run.
     await env.DB.prepare('UPDATE cards SET front = ? WHERE id = ?').bind('Front [sound:a.mp3]', 'imported-222-1').run()
 
     const [second] = await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files: [{ filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3, 4, 5]) }] })
@@ -111,5 +121,30 @@ describe('processMediaChunk', () => {
     expect(results.every((r) => typeof r.mediaAssetId === 'string')).toBe(true)
     const { results: assets } = await env.DB.prepare('SELECT filename FROM media_assets WHERE deck_id = ?').bind('222').all()
     expect(assets).toHaveLength(150)
+  })
+
+  it('rewrites every card that shares a media file, not just one', async () => {
+    // A shared audio clip referenced by two different notes — the old
+    // instr()-based UPDATE matched (and rewrote) every referencing row in
+    // one statement; the indexed-lookup replacement issues one UPDATE per
+    // referencing card_id, so this specifically covers that fan-out.
+    await env.DB
+      .prepare('INSERT INTO cards (id, deck_id, anki_note_id, front, back, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind('imported-222-2', '222', 2, 'Question two [sound:shared.mp3]', 'Answer two', Date.now())
+      .run()
+    await env.DB
+      .prepare('INSERT INTO card_media_refs (deck_id, filename, card_id) VALUES (?, ?, ?)')
+      .bind('222', 'shared.mp3', 'imported-222-2')
+      .run()
+
+    const [{ mediaAssetId }] = await processMediaChunk({
+      db: env.DB,
+      mediaBucket: env.MEDIA,
+      deckId: '222',
+      files: [{ filename: 'shared.mp3', bytes: new Uint8Array([7, 7]) }],
+    })
+
+    const card2 = await env.DB.prepare('SELECT front FROM cards WHERE id = ?').bind('imported-222-2').first()
+    expect(card2.front).toBe(`Question two [sound:/api/media/${mediaAssetId}]`)
   })
 })

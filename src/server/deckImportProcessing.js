@@ -45,6 +45,16 @@ export async function upsertDeckRow({ db, deck }) {
  * Workflow's render-chunk step) accumulates `mediaNeeded` across chunks
  * itself; see that file for why the accumulation has to happen outside
  * step.do() rather than as a side effect inside it.
+ *
+ * Also (re)populates card_media_refs — see migrations/0009_create_card_media_refs.sql
+ * for why: it's the indexed reverse lookup (filename -> card_id) that lets
+ * processMediaChunk rewrite card references without scanning every card in
+ * the deck. Stale refs for each of this chunk's cards are deleted first
+ * (one DELETE per card_id — cheap, primary-key-prefixed, and correctly
+ * handles a re-import where a card's template changed and it no longer
+ * references some filename it used to), then the current set is inserted
+ * fresh. Both go in the SAME batch as the card upserts, so this is still one
+ * D1 round-trip for the whole chunk regardless of chunk size.
  */
 export async function upsertCardChunk({ db, deckId, cards }) {
   const now = Date.now()
@@ -52,6 +62,7 @@ export async function upsertCardChunk({ db, deckId, cards }) {
   const mediaNeeded = new Set()
 
   for (const card of cards) {
+    const id = cardId(deckId, card.ankiNoteId)
     for (const filename of card.mediaFilenames) mediaNeeded.add(filename)
 
     writes.push(
@@ -64,8 +75,23 @@ export async function upsertCardChunk({ db, deckId, cards }) {
              back = excluded.back,
              updated_at = excluded.updated_at`
         )
-        .bind(cardId(deckId, card.ankiNoteId), deckId, card.ankiNoteId, card.front, card.back, now)
+        .bind(id, deckId, card.ankiNoteId, card.front, card.back, now)
     )
+
+    // Deleted by card_id (indexed as the PK's third column — SQLite can
+    // still use a PK/index prefix scan here since deck_id is fixed and
+    // known, but card_id alone isn't a leading prefix; this is a small,
+    // bounded scan of just this one card's own ref rows, not the deck's
+    // cards) — cheap regardless, since one card references at most a
+    // handful of files.
+    writes.push(db.prepare(`DELETE FROM card_media_refs WHERE deck_id = ? AND card_id = ?`).bind(deckId, id))
+    for (const filename of card.mediaFilenames) {
+      writes.push(
+        db
+          .prepare(`INSERT INTO card_media_refs (deck_id, filename, card_id) VALUES (?, ?, ?)`)
+          .bind(deckId, filename, id)
+      )
+    }
   }
 
   if (writes.length > 0) await db.batch(writes)
