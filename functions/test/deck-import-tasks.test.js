@@ -6,7 +6,7 @@
 // (decks-import-workflow.test.js, a single-media-file deck) never exercises.
 import { env } from 'cloudflare:workers'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { completeMediaTask, createMediaTasks, mediaTaskId } from '../../src/server/deckImportTasks.js'
+import { completeMediaTask, createMediaTasks, mediaTaskId, stagedMediaChunkKey } from '../../src/server/deckImportTasks.js'
 
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM deck_import_jobs')
@@ -27,6 +27,13 @@ describe('mediaTaskId', () => {
     expect(mediaTaskId('job1', 900, 0)).toBe('job1-media-900-0')
     expect(mediaTaskId('job1', 900, 0)).not.toBe(mediaTaskId('job1', 900, 90))
     expect(mediaTaskId('job1', 900, 0)).not.toBe(mediaTaskId('job1', 901, 0))
+  })
+})
+
+describe('stagedMediaChunkKey', () => {
+  it('groups every chunk under one job-scoped R2 prefix', () => {
+    expect(stagedMediaChunkKey('job1', 900, 0)).toBe('raw-imports/job1/media-chunk-900-0.bin')
+    expect(stagedMediaChunkKey('job1', 900, 90).startsWith('raw-imports/job1/')).toBe(true)
   })
 })
 
@@ -73,6 +80,23 @@ describe('completeMediaTask', () => {
     const job = await env.DB.prepare('SELECT status FROM deck_import_jobs WHERE id = ?').bind('job1').first()
     expect(job.status).toBe('done')
     expect(await env.MEDIA.get('raw-imports/job1.apkg')).toBeNull()
+  })
+
+  it('also deletes every staged media-chunk blob under the job prefix when the last task completes', async () => {
+    await insertJob('job1')
+    const taskIds = ['job1-media-900-0', 'job1-media-900-90']
+    await createMediaTasks({ db: env.DB, jobId: 'job1', taskIds })
+    await env.MEDIA.put('raw-imports/job1.apkg', new Uint8Array([1]))
+    const stagedKeys = [stagedMediaChunkKey('job1', 900, 0), stagedMediaChunkKey('job1', 900, 90)]
+    await Promise.all(stagedKeys.map((key) => env.MEDIA.put(key, new Uint8Array([2]))))
+    // An unrelated job's raw upload sitting outside this prefix must survive.
+    await env.MEDIA.put('raw-imports/other-job.apkg', new Uint8Array([3]))
+
+    await completeMediaTask({ db: env.DB, mediaBucket: env.MEDIA, jobId: 'job1', r2Key: 'raw-imports/job1.apkg', taskId: taskIds[0] })
+    await completeMediaTask({ db: env.DB, mediaBucket: env.MEDIA, jobId: 'job1', r2Key: 'raw-imports/job1.apkg', taskId: taskIds[1] })
+
+    for (const key of stagedKeys) expect(await env.MEDIA.get(key)).toBeNull()
+    expect(await env.MEDIA.get('raw-imports/other-job.apkg')).not.toBeNull()
   })
 
   it('fails the job when a task errors, even while sibling tasks are still pending', async () => {

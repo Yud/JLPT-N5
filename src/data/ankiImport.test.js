@@ -7,11 +7,15 @@ import { zstdCompressSync } from 'node:zlib'
 import {
   decodeMediaManifest,
   decodeTemplateConfig,
+  decompressMediaBytes,
   decompressMediaFile,
   extractDeckMetadata,
+  extractRawMediaFiles,
   loadSqlJs,
+  packMediaChunk,
   renderAnkiTemplate,
   renderCardChunk,
+  unpackMediaChunk,
 } from './ankiImport.js'
 
 // Node-side sql.js init for building fixtures, independent of ankiImport.js's
@@ -317,5 +321,72 @@ describe('decompressMediaFile', () => {
 
     const { entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
     expect(await decompressMediaFile(new Uint8Array(buffer), entryNameByFilename, 'missing.mp3')).toBeNull()
+  })
+})
+
+describe('extractRawMediaFiles + decompressMediaBytes (staging split)', () => {
+  it('extracts zip-layer bytes without doing the zstd layer, then decompressMediaBytes does just that second layer', async () => {
+    const collectionBytes = await buildCollectionDb({ decks: [], notetype: BASIC_NOTETYPE, notes: [] })
+    const realAudioBytes = new Uint8Array([10, 20, 30, 40, 50])
+    const zstdCompressed = zstdCompressSync(realAudioBytes)
+    const buffer = await buildApkgZip({
+      collectionEntryName: 'collection.anki2',
+      collectionBytes,
+      mediaManifestBytes: utf8.encode(JSON.stringify({ 0: 'answer.mp3' })),
+      mediaFiles: { 0: zstdCompressed },
+    })
+
+    const { entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const raw = extractRawMediaFiles(new Uint8Array(buffer), entryNameByFilename, ['answer.mp3', 'missing.mp3'])
+
+    // Still zstd-compressed — extractRawMediaFiles is deliberately one layer short of decompressMediaFile.
+    expect(raw.get('answer.mp3')).toEqual(new Uint8Array(zstdCompressed))
+    // Missing filenames are omitted entirely, not included as null/undefined.
+    expect(raw.has('missing.mp3')).toBe(false)
+    expect(raw.size).toBe(1)
+
+    expect(await decompressMediaBytes(raw.get('answer.mp3'))).toEqual(realAudioBytes)
+  })
+
+  it('passes through already-uncompressed bytes unchanged (legacy Anki media, no zstd layer)', async () => {
+    const plainBytes = new Uint8Array([1, 2, 3])
+    expect(await decompressMediaBytes(plainBytes)).toEqual(plainBytes)
+  })
+})
+
+describe('packMediaChunk / unpackMediaChunk', () => {
+  it('round-trips multiple files, including empty content and unicode filenames', () => {
+    const files = new Map([
+      ['answer.mp3', new Uint8Array([1, 2, 3, 4, 5])],
+      ['骨_ホネ＼_2_NHK-2016.mp3', new Uint8Array([9, 9])],
+      ['empty.png', new Uint8Array([])],
+    ])
+
+    const packed = packMediaChunk(files)
+    const unpacked = unpackMediaChunk(packed)
+
+    expect(unpacked.size).toBe(3)
+    expect(unpacked.get('answer.mp3')).toEqual(new Uint8Array([1, 2, 3, 4, 5]))
+    expect(unpacked.get('骨_ホネ＼_2_NHK-2016.mp3')).toEqual(new Uint8Array([9, 9]))
+    expect(unpacked.get('empty.png')).toEqual(new Uint8Array([]))
+  })
+
+  it('round-trips an empty chunk', () => {
+    const packed = packMediaChunk(new Map())
+    expect(packed.length).toBe(0)
+    expect(unpackMediaChunk(packed).size).toBe(0)
+  })
+
+  it('unpacks correctly from a Uint8Array view with a non-zero byteOffset (e.g. from a larger buffer, matching how a fetched R2 body is materialized)', () => {
+    const files = new Map([['a.mp3', new Uint8Array([7, 8, 9])]])
+    const packed = packMediaChunk(files)
+
+    // Simulate the packed bytes living at an offset within a larger buffer.
+    const padded = new Uint8Array(5 + packed.length)
+    padded.set(packed, 5)
+    const view = padded.subarray(5)
+
+    const unpacked = unpackMediaChunk(view)
+    expect(unpacked.get('a.mp3')).toEqual(new Uint8Array([7, 8, 9]))
   })
 })

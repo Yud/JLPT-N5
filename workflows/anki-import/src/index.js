@@ -11,20 +11,25 @@
 // the two Workflow classes themselves.
 //
 // DeckImportWorkflow does the deck/card side of an Anki import (unzip,
-// decode the SQLite collection, upsert decks/cards) and SCATTERS media
-// processing — it creates one deck_import_tasks row and one independent
-// MediaChunkWorkflow instance per chunk of media files, then its own job is
-// done; it never waits for them. See MediaChunkWorkflow's own header comment
-// (mediaChunkWorkflow.js) and migrations/0008_create_deck_import_tasks.sql
-// for why: a single long-lived instance coordinating every media chunk
-// itself, the way this used to work, meant every chunk shared one instance's
-// resource budget for an import's whole duration, and that broke production
-// repeatedly (see this file's git history — a 108MB archive, and separately
-// the sql.js WASM module used to parse it, both ended up retained in run()'s
-// own suspended state across dozens of later step.do() calls, each a fix
-// that only lasted until the next resource ceiling). Each MediaChunkWorkflow
-// instance instead gets a genuinely fresh isolate and only ever knows about
-// its own chunk.
+// decode the SQLite collection, upsert decks/cards), STAGES each chunk of
+// media to R2 ahead of time, and SCATTERS the actual media processing — it
+// creates one deck_import_tasks row and one independent MediaChunkWorkflow
+// instance per chunk, then its own job is done; it never waits for them.
+// See MediaChunkWorkflow's own header comment (mediaChunkWorkflow.js) and
+// migrations/0008_create_deck_import_tasks.sql for the full history: a
+// single long-lived instance coordinating every media chunk itself, the way
+// this used to work, meant every chunk shared one instance's resource budget
+// for an import's whole duration, and that broke production repeatedly (a
+// 108MB archive, and separately the sql.js WASM module used to parse it,
+// both ended up retained in run()'s own suspended state across dozens of
+// later step.do() calls). Giving each chunk its own MediaChunkWorkflow
+// instance fixed that, but not completely — production still failed on
+// ~8% of chunks even then, because each instance still fetched the full
+// archive itself, and Workers memory is per-*isolate*, not per-invocation:
+// several concurrently-scheduled instances (createBatch() creates all of
+// them at nearly the same moment) can share one isolate's 128MB budget.
+// Staging (below) means each MediaChunkWorkflow instance only ever fetches
+// a few MB, which stays safe even when several instances share an isolate.
 //
 // Earlier designs had the browser parse the .apkg client-side and drive a
 // multi-request choreography (deck/card POST, N media-upload POSTs, a
@@ -39,9 +44,9 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { NonRetryableError } from 'cloudflare:workflows'
-import { extractDeckMetadata, renderCardChunk } from '../../../src/data/ankiImport.js'
+import { extractDeckMetadata, renderCardChunk, extractRawMediaFiles, packMediaChunk } from '../../../src/data/ankiImport.js'
 import { upsertDeckRow, upsertCardChunk } from '../../../src/server/deckImportProcessing.js'
-import { createMediaTasks, mediaTaskId } from '../../../src/server/deckImportTasks.js'
+import { createMediaTasks, mediaTaskId, stagedMediaChunkKey } from '../../../src/server/deckImportTasks.js'
 import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 
 export { MediaChunkWorkflow } from './mediaChunkWorkflow.js'
@@ -59,10 +64,9 @@ export { MediaChunkWorkflow } from './mediaChunkWorkflow.js'
 // so it was never at risk from D1's per-invocation query-count or
 // per-query bound-parameter limits either.
 //
-// MEDIA_CHUNK_SIZE (files per MediaChunkWorkflow instance) is sized off
-// three separate, independent ceilings this hit in production, all now
-// handled by MediaChunkWorkflow/processMediaChunk — see their own comments
-// for the fixes:
+// MEDIA_CHUNK_SIZE (files per MediaChunkWorkflow instance, AND per staging
+// blob — see below for why those two have to match) is sized off FOUR
+// separate, independent ceilings this hit in production:
 //   - CPU time: fflate's per-call cost is dominated by a near-fixed
 //     central-directory scan (~3-9ms locally, largely independent of chunk
 //     size up to at least 200 files), so this is sized for step count, not
@@ -72,10 +76,40 @@ export { MediaChunkWorkflow } from './mediaChunkWorkflow.js'
 //   - D1 bound parameters per query (100) — processMediaChunk's
 //     existence-check SELECT binds one `?` per filename plus one for
 //     deckId, so this has to stay comfortably under 100.
-// Isolate memory (128MB, fixed on every plan) isn't a per-chunk-size
-// constraint at all with the scatter/gather design — each chunk gets its
-// own instance and its own budget, rather than sharing one growing budget
-// with every other chunk in the import.
+//   - Isolate memory (128MB, fixed on every plan): NOT fixed by giving each
+//     chunk its own MediaChunkWorkflow instance alone — production still
+//     failed 4/49 times with "Worker exceeded memory limit" after that
+//     redesign shipped, because each instance still fetched the full 108MB
+//     archive, and memory is per-*isolate*, not per-invocation (a single
+//     isolate can run several concurrent instances, and createBatch()
+//     creates all of them at nearly the same moment — see
+//     mediaChunkWorkflow.js's header comment for the full mechanism). Fixed
+//     by staging each chunk's raw media to R2 ahead of time (below) so each
+//     instance only ever fetches a few MB, not 108MB.
+//
+// The staging step below extracts+packs exactly ONE chunk's worth of files
+// (MEDIA_CHUNK_SIZE, not some coarser batch) per archive fetch — profiled
+// locally against the real fixture (Kaishi.1.5k.v2.4.3.apkg): extract+pack
+// for a 90-file batch costs 3.2-8.2ms (avg ~5ms), safely under the 10ms/step
+// cap. Coarser batches were tried first and rejected: 180 files averaged
+// ~7ms but occasionally spiked; 270 files spiked to 161ms on one run (almost
+// certainly a GC pause — a warning sign about margin, not a one-off to
+// ignore) and averaged 38ms, blowing the cap outright. A batch size other
+// than MEDIA_CHUNK_SIZE would also misalign staged blobs from gather chunks
+// (a chunk needing pieces from two different staging batches), reintroducing
+// the exact cross-step accumulation problem this design exists to avoid — so
+// the two constants have to stay equal, not just both "some small number."
+//
+// Does concentrating ~49 sequential archive fetches into ONE DeckImportWorkflow
+// instance (staging) just relocate the memory risk somewhere worse? Probably
+// not, for the same reason MediaChunkWorkflow's failures happened in the
+// first place: that mechanism is concurrent instances sharing an isolate,
+// each independently holding 108MB at the same moment. A single instance's
+// own sequential step.do() calls are awaited one at a time — this instance
+// never holds two archive-sized buffers at once, by construction — so it
+// doesn't reproduce the same failure mode, even though each individual
+// fetch still carries whatever baseline per-fetch risk exists. Not proven
+// risk-free; worth watching in production, which is why this comment exists.
 const MEDIA_CHUNK_SIZE = 90
 const RENDER_CHUNK_SIZE = 150
 
@@ -176,27 +210,43 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
           chunks.push({ index: i, filenames: mediaNeededList.slice(i, i + MEDIA_CHUNK_SIZE) })
         }
 
+        // STAGE: one step per chunk — see the MEDIA_CHUNK_SIZE comment above
+        // for why this can't be coarser (CPU budget) or reuse a shared
+        // archive fetch across steps (the memory-retention bug this whole
+        // file's history is about). Each step re-fetches the archive fresh,
+        // scoped to its own callback, extracts just this chunk's raw media
+        // bytes, packs them, and stages the result to R2 — so the
+        // MediaChunkWorkflow instance created for this chunk below never
+        // has to touch the archive itself.
+        for (const chunk of chunks) {
+          await step.do(`stage-media-${deck.ankiDeckId}-${chunk.index}`, async () => {
+            const object = await mediaBucket.get(r2Key)
+            const archiveBytes = new Uint8Array(await object.arrayBuffer())
+            const rawFiles = extractRawMediaFiles(archiveBytes, entryNameByFilename, chunk.filenames)
+            const packed = packMediaChunk(rawFiles)
+            await mediaBucket.put(stagedMediaChunkKey(jobId, deck.ankiDeckId, chunk.index), packed)
+          })
+        }
+
+        // SCATTER: create task rows + MediaChunkWorkflow instances, batched
+        // up to createBatch()'s 100-instance-per-call limit (independent of
+        // MEDIA_CHUNK_SIZE — for this deck, 49 chunks fit in one batch).
         for (let batchStart = 0; batchStart < chunks.length; batchStart += SCATTER_BATCH_SIZE) {
           const batch = chunks.slice(batchStart, batchStart + SCATTER_BATCH_SIZE)
           await step.do(`scatter-media-${deck.ankiDeckId}-${batchStart}`, async () => {
             const taskIds = batch.map((chunk) => mediaTaskId(jobId, deck.ankiDeckId, chunk.index))
             await createMediaTasks({ db, jobId, taskIds })
 
-            const instances = batch.map((chunk, i) => {
-              // Only this chunk's slice of the filename -> zip-entry map —
-              // small and bounded by MEDIA_CHUNK_SIZE, unlike the full
-              // manifest (up to 4,354 entries for this deck), which is never
-              // handed to a child at all. Each instance re-derives nothing;
-              // it just needs to know where its own files live in the
-              // archive it fetches for itself.
-              const entryNames = Object.fromEntries(
-                chunk.filenames.filter((filename) => entryNameByFilename.has(filename)).map((filename) => [filename, entryNameByFilename.get(filename)])
-              )
-              return {
-                id: taskIds[i],
-                params: { jobId, r2Key, deckId, taskId: taskIds[i], filenames: chunk.filenames, entryNames },
-              }
-            })
+            const instances = batch.map((chunk, i) => ({
+              id: taskIds[i],
+              params: {
+                jobId,
+                r2Key,
+                deckId,
+                taskId: taskIds[i],
+                chunkR2Key: stagedMediaChunkKey(jobId, deck.ankiDeckId, chunk.index),
+              },
+            }))
             await mediaChunkWorkflow.createBatch(instances)
           })
         }

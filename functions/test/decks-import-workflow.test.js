@@ -131,5 +131,11 @@ describe('DeckImportWorkflow (end to end)', () => {
 
     // The raw upload is cleaned up once the job finishes successfully.
     expect(await env.MEDIA.get(job.r2_key)).toBeNull()
+
+    // So is the staged media-chunk blob DeckImportWorkflow's scatter phase
+    // put under this job's prefix — completeMediaTask's finalization lists
+    // and deletes everything there, not just the raw upload.
+    const { objects: remainingStagedObjects } = await env.MEDIA.list({ prefix: `raw-imports/${jobId}/` })
+    expect(remainingStagedObjects).toHaveLength(0)
   })
 })

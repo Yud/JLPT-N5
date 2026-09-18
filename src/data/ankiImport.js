@@ -319,6 +319,91 @@ export async function decompressMediaFile(rawBytes, entryNameByFilename, filenam
 }
 
 /**
+ * Extracts just the zip-layer bytes (still individually zstd-compressed for
+ * modern Anki media, NOT decompressed further — unlike `decompressMediaFiles`,
+ * which does both layers) for a batch of filenames. Used by
+ * DeckImportWorkflow's staging step (workflows/anki-import/src/index.js) to
+ * pull a chunk's raw content out of the archive once, pack it, and hand it to
+ * a MediaChunkWorkflow instance that never needs to touch the archive itself
+ * — see that file's header comment for why fetching the whole archive per
+ * gather instance was the actual cause of production's isolate-memory
+ * failures. Returns `Map<filename, Uint8Array>` — filenames not actually
+ * present in the archive are omitted entirely (not included as null); a
+ * filename simply missing from the map — and later from `unpackMediaChunk`'s
+ * result — is the same "not found" signal `processMediaChunk` already treats
+ * as a skip.
+ */
+export function extractRawMediaFiles(rawBytes, entryNameByFilename, filenames) {
+  const entryNames = filenames.map((filename) => entryNameByFilename.get(filename)).filter((name) => name !== undefined)
+  const extracted = extractZipEntries(rawBytes, entryNames)
+
+  const result = new Map()
+  for (const filename of filenames) {
+    const entryName = entryNameByFilename.get(filename)
+    const zipLayerBytes = entryName !== undefined ? extracted[entryName] : undefined
+    if (zipLayerBytes) result.set(filename, zipLayerBytes)
+  }
+  return result
+}
+
+/** zstd-decompresses one already zip-extracted media file's bytes, if it's zstd-compressed — see `decompressMediaFiles`'s doc comment for why modern Anki media needs this second layer. */
+export async function decompressMediaBytes(zipLayerBytes) {
+  return maybeDecompress(zipLayerBytes)
+}
+
+const UINT32_BYTES = 4
+
+/**
+ * Packs a chunk's raw (zip-layer-extracted, from `extractRawMediaFiles`)
+ * media files into one binary blob for staging to R2 — see
+ * workflows/anki-import/src/index.js's staging step. Format: repeated
+ * `[4-byte filename byte-length][filename utf8][4-byte content byte-length]
+ * [content]`, concatenated. Deliberately minimal, not a "real" archive
+ * format — `packMediaChunk`/`unpackMediaChunk` are the only two things that
+ * ever need to agree on it.
+ */
+export function packMediaChunk(filesByName) {
+  const encoder = new TextEncoder()
+  const entries = [...filesByName].map(([filename, bytes]) => ({ nameBytes: encoder.encode(filename), bytes }))
+  const totalLength = entries.reduce((sum, { nameBytes, bytes }) => sum + UINT32_BYTES * 2 + nameBytes.length + bytes.length, 0)
+
+  const packed = new Uint8Array(totalLength)
+  const view = new DataView(packed.buffer)
+  let offset = 0
+  for (const { nameBytes, bytes } of entries) {
+    view.setUint32(offset, nameBytes.length, true)
+    offset += UINT32_BYTES
+    view.setUint32(offset, bytes.length, true)
+    offset += UINT32_BYTES
+    packed.set(nameBytes, offset)
+    offset += nameBytes.length
+    packed.set(bytes, offset)
+    offset += bytes.length
+  }
+  return packed
+}
+
+/** Unpacks a blob produced by `packMediaChunk` — see there for the format. Returns `Map<filename, Uint8Array>`. */
+export function unpackMediaChunk(packed) {
+  const decoder = new TextDecoder()
+  const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength)
+  const result = new Map()
+  let offset = 0
+  while (offset < packed.length) {
+    const nameLength = view.getUint32(offset, true)
+    offset += UINT32_BYTES
+    const contentLength = view.getUint32(offset, true)
+    offset += UINT32_BYTES
+    const filename = decoder.decode(packed.subarray(offset, offset + nameLength))
+    offset += nameLength
+    const content = packed.slice(offset, offset + contentLength)
+    offset += contentLength
+    result.set(filename, content)
+  }
+  return result
+}
+
+/**
  * Parses a `.apkg` file's bytes into deck metadata and RAW (unrendered) card
  * rows — WITHOUT decompressing any media, and WITHOUT rendering card
  * templates (see module header comment for why both are deferred). `SQL` is
