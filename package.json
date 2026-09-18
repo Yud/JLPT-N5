@@ -11,6 +11,7 @@
     "test:e2e": "playwright test",
     "db:migrate:local": "wrangler d1 migrations apply hiragana-db --local",
     "dev:api": "npm run build && wrangler pages dev dist",
+    "dev:workflow": "wrangler dev --config workflows/anki-import/wrangler.toml --persist-to .wrangler/state",
     "sync:wanikani": "node scripts/sync-wanikani-words.mjs"
   },
   "dependencies": {

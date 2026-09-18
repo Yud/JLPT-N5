@@ -16,8 +16,12 @@ bucket_name = "hiragana-media"
 # Pages Functions can't define a Workflow directly (WorkflowEntrypoint must
 # live in its own Worker) — this triggers the one in workflows/anki-import,
 # deployed as its own project (see .github/workflows/deploy.yml). Local dev:
-# run `wrangler dev` in workflows/anki-import alongside `wrangler pages dev`
-# here; wrangler's local dev registry resolves the binding to that process.
+# run `npm run dev:workflow` alongside `npm run dev:api`; wrangler's local
+# dev registry resolves the binding to that process. `dev:workflow` passes
+# --persist-to so it shares this project's local D1/R2 state instead of its
+# own separate (and, on a fresh run, empty/schema-less) one — without it,
+# media processing fails with D1 errors like "no such table: media_assets",
+# or silently no-ops against the wrong local data.
 [[services]]
 binding = "MEDIA_IMPORT_WORKFLOW_TRIGGER"
 service = "workflows-anki-import"

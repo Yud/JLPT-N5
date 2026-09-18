@@ -35,6 +35,8 @@ Then open the printed local URL in a browser.
 | `npm run test` | Run the unit test suite (Vitest) |
 | `npm run test:e2e` | Run the end-to-end suite (Playwright) — local only, see below |
 | `npm run sync:wanikani` | Refresh *local* D1's WaniKani word cache, for development (see below) |
+| `npm run dev:api` | Build and serve the full app (frontend + Functions + local D1/R2) via `wrangler pages dev` |
+| `npm run dev:workflow` | Run the `workflows/anki-import` Worker locally, needed alongside `dev:api` for Anki deck media import to work (see below) |
 
 ## E2E tests
 
@@ -50,6 +52,31 @@ npm run test:e2e
 ```
 
 It starts the Vite dev server on port 5173 automatically (reusing one you already have running), runs the suite, and prints results to the terminal. `test-results/` and `playwright-report/` (gitignored) hold failure traces/screenshots when a test fails.
+
+## Local API development
+
+`npm run dev` (Vite alone) doesn't serve `functions/api/` — it has no proxy, so
+`fetch('/api/...')` just falls through to Vite's SPA fallback and returns the
+`index.html` shell instead of JSON. For anything that touches the backend
+(decks, reviews, WaniKani sync), use `npm run dev:api` instead, which builds
+and serves the whole app — frontend and Functions — through `wrangler pages
+dev` on `localhost:8788`.
+
+Importing an Anki deck also needs the separate `workflows/anki-import` Worker
+running (`npm run dev:workflow`) — Cloudflare Pages Functions can't host a
+Workflow directly (see `wrangler.toml`'s `[[services]]` comment), so
+`dev:api`'s media-processing calls have nowhere to go without it. Run both
+side by side; `dev:workflow` passes `--persist-to` so its Worker shares
+`dev:api`'s local D1/R2 state rather than starting with its own empty copy —
+without that flag, media import fails with `D1_ERROR: no such table` (or
+worse, silently succeeds against a database with no data in it).
+
+There's no local stand-in for Cloudflare Access either: `Cf-Access-*`
+headers only exist in production, so a plain local request to any
+signed-in-gated endpoint 401s. Add
+`Cf-Access-Authenticated-User-Email: <any value>` yourself — e.g. a browser
+extension like ModHeader for manual testing, or set it directly when driving
+requests via curl/Playwright.
 
 ## WaniKani listening quiz
 
