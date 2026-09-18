@@ -82,6 +82,7 @@ async function pollJobUntilTerminal(jobId, { timeoutMs = 15000 } = {}) {
 
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM deck_import_jobs')
+  await env.DB.exec('DELETE FROM deck_import_tasks')
   await env.DB.exec('DELETE FROM decks')
   await env.DB.exec('DELETE FROM cards')
   await env.DB.exec('DELETE FROM media_assets')
@@ -106,7 +107,14 @@ describe('DeckImportWorkflow (end to end)', () => {
     expect(startResponse.status).toBe(202)
 
     const finalJob = await pollJobUntilTerminal(jobId)
-    expect(finalJob).toMatchObject({ status: 'done', decks_total: 1, decks_done: 1, media_total: 1, media_done: 1 })
+    expect(finalJob).toMatchObject({ status: 'done', decks_total: 1, decks_done: 1 })
+
+    // Media progress now lives in deck_import_tasks — one row per media
+    // chunk, each owned by its own MediaChunkWorkflow instance (scattered by
+    // DeckImportWorkflow) — not in columns on deck_import_jobs.
+    const mediaTasks = await env.DB.prepare('SELECT * FROM deck_import_tasks WHERE job_id = ?').bind(jobId).all()
+    expect(mediaTasks.results).toHaveLength(1)
+    expect(mediaTasks.results[0]).toMatchObject({ status: 'done' })
 
     const deckRow = await env.DB.prepare('SELECT * FROM decks WHERE anki_deck_id = ?').bind(900).first()
     expect(deckRow).toMatchObject({ name: 'Workflow Test Deck', card_count: 1 })

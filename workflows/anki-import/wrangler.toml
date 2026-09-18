@@ -29,3 +29,13 @@ bucket_name = "hiragana-media"
 binding = "DECK_IMPORT_WORKFLOW"
 name = "deck-import-workflow"
 class_name = "DeckImportWorkflow"
+
+# One independent instance per media chunk, created by DeckImportWorkflow's
+# scatter step (src/index.js) — never triggered directly by a Pages Function
+# the way DECK_IMPORT_WORKFLOW is. See src/mediaChunkWorkflow.js's header
+# comment for why this is a separate Workflow instead of a step loop inside
+# DeckImportWorkflow.
+[[workflows]]
+binding = "MEDIA_CHUNK_WORKFLOW"
+name = "media-chunk-workflow"
+class_name = "MediaChunkWorkflow"

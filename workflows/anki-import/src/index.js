@@ -1,20 +1,35 @@
-// Standalone Worker hosting the DeckImportWorkflow (see repo root
-// wrangler.toml's [[services]] DECK_IMPORT_WORKFLOW_TRIGGER binding and
-// functions/api/decks/import/[jobId]/start.js, which triggers it).
+// Standalone Worker hosting the DeckImportWorkflow and MediaChunkWorkflow
+// (see repo root wrangler.toml's [[services]] DECK_IMPORT_WORKFLOW_TRIGGER
+// binding and functions/api/decks/import/[jobId]/start.js, which triggers
+// the former).
 //
 // Cloudflare Pages Functions can't define a WorkflowEntrypoint directly — it
 // has to live in its own Worker, deployed separately (see
 // .github/workflows/deploy.yml), which Pages Functions call via a service
 // binding. This Worker's only job is: (1) a minimal HTTP entrypoint Pages
-// Functions can `.fetch()` to create a Workflow instance, and (2) the
-// Workflow itself.
+// Functions can `.fetch()` to create a DeckImportWorkflow instance, and (2)
+// the two Workflow classes themselves.
 //
-// This Workflow does the ENTIRE Anki import — unzip, decode the SQLite
-// collection, decompress media, upsert decks/cards, store media — server-side.
+// DeckImportWorkflow does the deck/card side of an Anki import (unzip,
+// decode the SQLite collection, upsert decks/cards) and SCATTERS media
+// processing — it creates one deck_import_tasks row and one independent
+// MediaChunkWorkflow instance per chunk of media files, then its own job is
+// done; it never waits for them. See MediaChunkWorkflow's own header comment
+// (mediaChunkWorkflow.js) and migrations/0008_create_deck_import_tasks.sql
+// for why: a single long-lived instance coordinating every media chunk
+// itself, the way this used to work, meant every chunk shared one instance's
+// resource budget for an import's whole duration, and that broke production
+// repeatedly (see this file's git history — a 108MB archive, and separately
+// the sql.js WASM module used to parse it, both ended up retained in run()'s
+// own suspended state across dozens of later step.do() calls, each a fix
+// that only lasted until the next resource ceiling). Each MediaChunkWorkflow
+// instance instead gets a genuinely fresh isolate and only ever knows about
+// its own chunk.
+//
 // Earlier designs had the browser parse the .apkg client-side and drive a
 // multi-request choreography (deck/card POST, N media-upload POSTs, a
 // trigger POST) to a version of this Worker that only handled media; that
-// crashed production repeatedly (subrequest cap, CPU-time cap, and finally a
+// crashed production repeatedly too (subrequest cap, CPU-time cap, and a
 // version of the CPU-time cap again even after media processing moved
 // server-side, because uploading media in size-capped batches still did
 // hundreds of sequential R2 puts in one Pages Function invocation). The
@@ -24,94 +39,64 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { NonRetryableError } from 'cloudflare:workflows'
-import { extractDeckMetadata, renderCardChunk, decompressMediaFiles } from '../../../src/data/ankiImport.js'
+import { extractDeckMetadata, renderCardChunk } from '../../../src/data/ankiImport.js'
 import { upsertDeckRow, upsertCardChunk } from '../../../src/server/deckImportProcessing.js'
-import { processMediaChunk } from '../../../src/server/mediaImportProcessing.js'
+import { createMediaTasks, mediaTaskId } from '../../../src/server/deckImportTasks.js'
 import { loadSqlJsForWorkflow } from './loadSqlJs.js'
+
+export { MediaChunkWorkflow } from './mediaChunkWorkflow.js'
 
 // This account is on Workers Free: 10ms CPU per step (fixed, cannot be
 // raised) and 1,024 steps per Workflow instance (fixed) — both bind at once
-// for a deck this size (4,354 media files, 1,501 cards). Progress updates are
-// folded into the same step as chunk processing rather than a separate step,
-// to keep step count down.
+// for a deck this size (4,354 media files, 1,501 cards).
 //
-// Both constants below were sized against real timing from the actual deck
-// that broke production (Kaishi.1.5k.v2.4.3.apkg, repo root) — see the
-// profiling notes in the commit/PR this shipped from. fflate's per-call cost
-// for decompressing a media chunk is dominated by a near-fixed central-
-// directory scan (~3-9ms locally, largely independent of chunk size up to at
-// least 200 files), so MEDIA_CHUNK_SIZE is set high to keep step count well
-// under the 1,024 budget rather than tuned down for CPU headroom the way the
-// original (unverified) CHUNK_SIZE=5 guess was. RENDER_CHUNK_SIZE is sized
-// off measured template-rendering cost (~0.03ms/card locally).
+// RENDER_CHUNK_SIZE (card template rendering, stays inline in
+// DeckImportWorkflow — cheap, never the source of a production crash, and
+// doesn't touch the archive's raw bytes) is sized off measured
+// template-rendering cost (~0.03ms/card locally against
+// Kaishi.1.5k.v2.4.3.apkg, repo root — see the profiling notes in the
+// commit/PR this shipped from). upsertCardChunk already batches its writes,
+// so it was never at risk from D1's per-invocation query-count or
+// per-query bound-parameter limits either.
 //
-// MEDIA_CHUNK_SIZE isn't bound by CPU alone, though: D1 separately caps a
-// Worker invocation (each step is one) at 50 queries on Workers Free
-// ("Queries per Worker invocation (read subrequest limits): 1000 (Paid) / 50
-// (Free)", per D1's own limits page) — hit as "Too many API requests by
-// single Worker invocation" when processMediaChunk still wrote one file at a
-// time. mediaImportProcessing.js now batches a whole chunk's D1 writes into
-// one db.batch() call (2 round-trips total per step, regardless of chunk
-// size), so MEDIA_CHUNK_SIZE is no longer constrained by D1's query COUNT —
-// only by CPU time, the 1 MiB step-result cap, and one more D1 limit: "Maximum
-// bound parameters per query: 100" (same limits page). processMediaChunk's
-// existence-check SELECT binds one `?` per filename in the chunk plus one for
-// deckId, so MEDIA_CHUNK_SIZE has to stay comfortably under 100 or that one
-// query alone fails with "D1_ERROR: too many SQL variables" — hit in
-// production at MEDIA_CHUNK_SIZE=100 (100 filenames + 1 deckId = 101).
-// RENDER_CHUNK_SIZE was never at risk from either D1 limit: upsertCardChunk's
-// batch has no single query whose bound-parameter count scales with the
-// whole chunk — each INSERT only binds that one card's own values.
-//
-// One more limit, separate from all of the above and NOT raised by
-// upgrading to Workers Paid: memory is a fixed 128 MB per isolate on every
-// plan ("Memory per isolate: 128 MB", Workers platform limits page — the
-// table lists 128 MB under both Free and Paid, unlike CPU time's 10ms vs
-// 30s+configurable). This deck's raw upload is 108MB — holding it in a
-// variable that `run()` itself keeps across the whole multi-step execution
-// leaves almost no headroom, and got hit for real: "exceeded CPU or memory
-// limits outside of a step" recurred, several media chunks into a real
-// import, well after the CPU-time fix above. It wasn't a CPU regression —
-// an async function's local variables stay part of its suspended state
-// across every `await` for as long as the function hasn't returned, so a
-// 108MB `rawBytes` declared in run() itself would still be retained through
-// dozens of later `step.do()` calls even though nothing read it again after
-// the first one. Fixed by never letting run() hold the archive's bytes at
-// all: fetchAndExtractDeckMetadata and each media chunk step below fetch
-// their own fresh copy from R2, scoped to their own function/callback frame,
-// so it's eligible for GC again as soon as that frame returns — see each
-// site's own comment.
-//
-// Re-verify against Cloudflare Workers Observability after deploying, not
-// just local timing — local dev doesn't enforce real CPU-time accounting,
-// D1's subrequest caps, or the 128MB memory ceiling the same way production
-// does, which is why the CPU-time issue, the D1 batching issue, and this
-// memory issue each passed local end-to-end testing but still failed in
-// production in turn.
+// MEDIA_CHUNK_SIZE (files per MediaChunkWorkflow instance) is sized off
+// three separate, independent ceilings this hit in production, all now
+// handled by MediaChunkWorkflow/processMediaChunk — see their own comments
+// for the fixes:
+//   - CPU time: fflate's per-call cost is dominated by a near-fixed
+//     central-directory scan (~3-9ms locally, largely independent of chunk
+//     size up to at least 200 files), so this is sized for step count, not
+//     CPU headroom, unlike the original (unverified) CHUNK_SIZE=5 guess.
+//   - D1 queries per invocation (50 on Free) — processMediaChunk batches a
+//     whole chunk's writes into one db.batch() call.
+//   - D1 bound parameters per query (100) — processMediaChunk's
+//     existence-check SELECT binds one `?` per filename plus one for
+//     deckId, so this has to stay comfortably under 100.
+// Isolate memory (128MB, fixed on every plan) isn't a per-chunk-size
+// constraint at all with the scatter/gather design — each chunk gets its
+// own instance and its own budget, rather than sharing one growing budget
+// with every other chunk in the import.
 const MEDIA_CHUNK_SIZE = 90
 const RENDER_CHUNK_SIZE = 150
+
+// Workflows' createBatch() accepts at most 100 instances per call (same
+// figure Cloudflare uses for the underlying instance-creation limit) — this
+// bounds how many deck_import_tasks rows + MediaChunkWorkflow instances the
+// scatter step creates in one d1.batch()/createBatch() pair, independent of
+// MEDIA_CHUNK_SIZE. For this deck (4,354 media files / 90 per chunk = 49
+// chunks) one scatter batch covers everything; a much larger deck would
+// need more than one, which the loop below already handles.
+const SCATTER_BATCH_SIZE = 100
 
 /**
  * Fetches the raw upload from R2 and extracts deck metadata from it — kept
  * as its own function, not inlined into run(), specifically so its locals
  * (`arrayBuffer`, the whole archive, AND `SQL`, the loaded sql.js WASM
- * module) are scoped to THIS function's call frame. Once this returns, that
- * frame becomes eligible for GC, instead of staying retained as part of
- * run()'s own suspended state for the rest of a long, many-step execution
- * (see the memory-limit comment above `MEDIA_CHUNK_SIZE`).
- *
- * `SQL` is loaded HERE, not passed in from run(), for exactly that reason —
- * an earlier version of this fix moved `arrayBuffer` out of run()'s scope
- * but still declared `const SQL = await loadSqlJsForWorkflow()` directly in
- * run(), which crashed again in production for the same underlying reason.
- * WASM linear memory can grow but never shrinks for the life of the module
- * instance that owns it, and opening + patching a real SQLite database (see
- * stripUnsupportedCollations in src/data/ankiImport.js — it opens the
- * database TWICE) grows it well past what an empty module starts at. As
- * long as run() itself never binds a variable to that module, none of that
- * memory is reachable from run()'s continuation once this function returns,
- * and it's released — same principle as `arrayBuffer`, just one variable we
- * missed the first time.
+ * module) are scoped to THIS function's call frame and eligible for GC once
+ * it returns, rather than staying part of run()'s own suspended state for
+ * the rest of a long execution — see the memory-limit history in this
+ * file's git log for why that distinction mattered in production (twice:
+ * once for `arrayBuffer`, once for `SQL`, loaded here for the same reason).
  */
 async function fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId }) {
   const object = await mediaBucket.get(r2Key)
@@ -126,6 +111,7 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
     const { jobId, r2Key } = event.payload
     const db = this.env.DB
     const mediaBucket = this.env.MEDIA
+    const mediaChunkWorkflow = this.env.MEDIA_CHUNK_WORKFLOW
 
     try {
       // Plain code, NOT step.do() — a parsed deck's raw card rows (unrendered
@@ -137,15 +123,8 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       // returns the cached result. This phase is pure, side-effect-free work
       // over the immutable uploaded bytes, so it's safe (and per Cloudflare's
       // own guidance, correct) to run outside a step — a restart just
-      // re-parses. It's now cheap enough to actually be cheap: fflate never
-      // indexes more of the archive than the couple of entries (collection
-      // DB, media manifest) it's asked for here, unlike the JSZip-based
-      // version this replaced, which built a full ~4,358-entry index up
-      // front and was the dominant cost that made this phase fail outside a
-      // step for a deck this size. See fetchAndExtractDeckMetadata's own doc
-      // comment for why it's a separate function rather than inlined here —
-      // notably, `SQL` (the sql.js WASM module) is loaded INSIDE that
-      // function now, not passed in from here, so run() never binds it.
+      // re-parses. See fetchAndExtractDeckMetadata's own doc comment for why
+      // it's a separate function rather than inlined here.
       const { decks, entryNameByFilename, notetypeCache } = await fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId })
 
       await step.do('update-deck-total', async () => {
@@ -155,8 +134,6 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
           .run()
       })
 
-      let mediaDoneTotal = 0
-      let mediaTotalSoFar = 0
       for (const deck of decks) {
         // Deck row only — card_count comes from the raw (unrendered) row
         // count, known upfront, so this doesn't need to wait on rendering.
@@ -164,11 +141,10 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
 
         // Renders + upserts this deck's cards a chunk at a time. Each chunk
         // step RETURNS its own mediaNeeded (small, bounded by chunk size) —
-        // accumulated into the Set below OUTSIDE step.do(), the same reason
-        // mediaDoneTotal is incremented outside step.do() further down: a
-        // step that's already complete is skipped (not re-run) on a resumed
-        // execution, so anything that must survive a resume has to come from
-        // a step's return value, never a side effect written from inside its
+        // accumulated into the Set below OUTSIDE step.do(): a step that's
+        // already complete is skipped (not re-run) on a resumed execution,
+        // so anything that must survive a resume has to come from a step's
+        // return value, never a side effect written from inside its
         // callback.
         const mediaNeeded = new Set()
         for (let i = 0; i < deck.cardRows.length; i += RENDER_CHUNK_SIZE) {
@@ -180,71 +156,78 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
           for (const filename of chunkMediaNeeded) mediaNeeded.add(filename)
         }
 
-        mediaTotalSoFar += mediaNeeded.size
-        await step.do(`update-media-total-${deck.ankiDeckId}`, async () => {
-          await db
-            .prepare(`UPDATE deck_import_jobs SET media_total = ?, updated_at = ? WHERE id = ?`)
-            .bind(mediaTotalSoFar, Date.now(), jobId)
-            .run()
-        })
-
-        const mediaNeededList = [...mediaNeeded]
-        for (let i = 0; i < mediaNeededList.length; i += MEDIA_CHUNK_SIZE) {
-          const chunk = mediaNeededList.slice(i, i + MEDIA_CHUNK_SIZE)
-          // Incremented OUTSIDE step.do — a plain, deterministic loop-counter
-          // update that correctly recomputes on every replay. If this lived
-          // inside the step.do callback instead, an already-completed step
-          // would return its cached result without re-running the callback
-          // on a resumed execution, silently under-counting progress for
-          // every chunk that finished before the restart.
-          mediaDoneTotal += chunk.length
-          await step.do(`media-${deck.ankiDeckId}-${i}`, async () => {
-            // Re-fetches the raw archive from R2 fresh for THIS chunk, rather
-            // than reusing one copy held across the whole Workflow run — see
-            // the memory-limit comment above MEDIA_CHUNK_SIZE. The refetched
-            // bytes are a local of this step.do() callback, so they're
-            // eligible for GC as soon as this callback returns, regardless of
-            // how many more steps the rest of run() still has to process.
-            // Costs an extra R2 read per chunk (~44 of them for this deck);
-            // R2 reads are cheap, a 128MB-isolate crash is not.
-            const object = await mediaBucket.get(r2Key)
-            const archiveBytes = new Uint8Array(await object.arrayBuffer())
-            // Decompresses this whole chunk in one pass over that archive —
-            // see decompressMediaFiles's doc comment for why that's cheaper
-            // than one call per file — then writes each file to R2 and its D1
-            // rows in one batch (processMediaChunk — see its module header
-            // comment for why that's not done per-file: D1 caps a step at 50
-            // queries/invocation on Free, and this chunk size assumes
-            // batching, not one-by-one writes), never accumulating more than
-            // one chunk's worth of decompressed bytes in memory at a time.
-            const decompressed = await decompressMediaFiles(archiveBytes, entryNameByFilename, chunk)
-            const files = chunk.map((filename) => ({ filename, bytes: decompressed.get(filename) }))
-            await processMediaChunk({ db, mediaBucket, deckId, files })
-            await db
-              .prepare(`UPDATE deck_import_jobs SET media_done = ?, updated_at = ? WHERE id = ?`)
-              .bind(mediaDoneTotal, Date.now(), jobId)
-              .run()
-          })
-        }
-
+        // decks_done means "this deck's row and all its cards are written"
+        // — it does NOT wait for this deck's media, which is now scattered
+        // to independent instances below and tracked separately (mediaDone/
+        // mediaTotal, sourced from deck_import_tasks — see the GET
+        // /api/decks/import/:jobId endpoint). The job as a whole isn't
+        // 'done' until every media task finishes; see completeMediaTask
+        // (src/server/deckImportTasks.js) for that finalization.
         await step.do(`deck-done-${deck.ankiDeckId}`, async () => {
           await db
             .prepare(`UPDATE deck_import_jobs SET decks_done = decks_done + 1, updated_at = ? WHERE id = ?`)
             .bind(Date.now(), jobId)
             .run()
         })
+
+        const mediaNeededList = [...mediaNeeded]
+        const chunks = []
+        for (let i = 0; i < mediaNeededList.length; i += MEDIA_CHUNK_SIZE) {
+          chunks.push({ index: i, filenames: mediaNeededList.slice(i, i + MEDIA_CHUNK_SIZE) })
+        }
+
+        for (let batchStart = 0; batchStart < chunks.length; batchStart += SCATTER_BATCH_SIZE) {
+          const batch = chunks.slice(batchStart, batchStart + SCATTER_BATCH_SIZE)
+          await step.do(`scatter-media-${deck.ankiDeckId}-${batchStart}`, async () => {
+            const taskIds = batch.map((chunk) => mediaTaskId(jobId, deck.ankiDeckId, chunk.index))
+            await createMediaTasks({ db, jobId, taskIds })
+
+            const instances = batch.map((chunk, i) => {
+              // Only this chunk's slice of the filename -> zip-entry map —
+              // small and bounded by MEDIA_CHUNK_SIZE, unlike the full
+              // manifest (up to 4,354 entries for this deck), which is never
+              // handed to a child at all. Each instance re-derives nothing;
+              // it just needs to know where its own files live in the
+              // archive it fetches for itself.
+              const entryNames = Object.fromEntries(
+                chunk.filenames.filter((filename) => entryNameByFilename.has(filename)).map((filename) => [filename, entryNameByFilename.get(filename)])
+              )
+              return {
+                id: taskIds[i],
+                params: { jobId, r2Key, deckId, taskId: taskIds[i], filenames: chunk.filenames, entryNames },
+              }
+            })
+            await mediaChunkWorkflow.createBatch(instances)
+          })
+        }
       }
 
-      await step.do('mark-done', async () => {
-        await db.prepare(`UPDATE deck_import_jobs SET status = 'done', updated_at = ? WHERE id = ?`).bind(Date.now(), jobId).run()
-        await mediaBucket.delete(r2Key)
+      // Safety net for a deck (or a whole job) with no media references at
+      // all: if no deck_import_tasks rows were ever created, no
+      // MediaChunkWorkflow instance will ever run completeMediaTask's
+      // finalization, and the job would otherwise sit at 'processing'
+      // forever. Matches completeMediaTask's own finalization guard
+      // (`WHERE status = 'processing'`), so this is a safe no-op if any
+      // tasks do exist.
+      await step.do('finalize-if-no-media', async () => {
+        const { total } = await db.prepare(`SELECT COUNT(*) AS total FROM deck_import_tasks WHERE job_id = ?`).bind(jobId).first()
+        if (total > 0) return
+        const result = await db
+          .prepare(`UPDATE deck_import_jobs SET status = 'done', updated_at = ? WHERE id = ? AND status = 'processing'`)
+          .bind(Date.now(), jobId)
+          .run()
+        if (result.meta.changes > 0) await mediaBucket.delete(r2Key).catch(() => {})
       })
     } catch (err) {
       // Reached only once retries for a step are exhausted — record the
       // failure on the job row rather than leaving it stuck at 'processing'
       // forever. Not rethrown: the row itself is now the durable record of
       // this failure, so there's nothing left for the Workflow's own
-      // retry/alerting to usefully do with a second throw.
+      // retry/alerting to usefully do with a second throw. This only covers
+      // failures in the scatter phase itself (metadata extraction, deck/card
+      // upserts, task creation) — a media chunk failing after being
+      // scattered is handled independently by completeMediaTask, since by
+      // then this instance is no longer involved.
       await step.do('mark-error', async () => {
         await db
           .prepare(`UPDATE deck_import_jobs SET status = 'error', error = ?, updated_at = ? WHERE id = ?`)
