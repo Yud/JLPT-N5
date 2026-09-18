@@ -7,7 +7,7 @@
       <RouterLink :to="{ name: 'decks' }" class="inline-block text-sm text-muted hover:text-text hover:underline sm:mb-3">
         ← Back to decks
       </RouterLink>
-      <p v-if="session" class="absolute inset-x-0 text-center text-sm sm:hidden">
+      <p v-if="session" class="pointer-events-none absolute inset-x-0 text-center text-sm sm:hidden">
         {{ session.progress.value.index }} / {{ session.progress.value.total }}
       </p>
     </div>
