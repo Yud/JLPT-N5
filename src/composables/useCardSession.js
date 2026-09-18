@@ -62,5 +62,15 @@ export function useCardSession(scopeId, getItems) {
     }).catch(() => {})
   }
 
-  return { currentCharacter, revealed, complete, progress, reveal, next, grade, restart }
+  // Permanently excludes the current card from future study (e.g. a junk
+  // "Welcome to X deck!" note that got imported as a real card) — same
+  // advance-immediately, fire-and-forget shape as grade().
+  function suspend() {
+    const card = currentCharacter.value
+    if (!card) return
+    next()
+    fetch(`/api/reviews/${card.id}/suspend`, { method: 'POST' }).catch(() => {})
+  }
+
+  return { currentCharacter, revealed, complete, progress, reveal, next, grade, suspend, restart }
 }

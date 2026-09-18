@@ -7,7 +7,7 @@
       <RouterLink :to="{ name: 'decks' }" class="inline-block text-sm text-muted hover:text-text hover:underline sm:mb-3">
         ← Back to decks
       </RouterLink>
-      <p v-if="session" class="pointer-events-none absolute inset-x-0 text-center text-sm sm:hidden">
+      <p v-if="session && session.progress.value.total > 0" class="pointer-events-none absolute inset-x-0 text-center text-sm sm:hidden">
         {{ session.progress.value.index }} / {{ session.progress.value.total }}
       </p>
     </div>
@@ -21,13 +21,24 @@
     </div>
 
     <div v-else>
-      <p class="hidden sm:block">Card {{ session.progress.value.index }} / {{ session.progress.value.total }}</p>
+      <p v-if="session.progress.value.total > 0" class="hidden sm:block">
+        Card {{ session.progress.value.index }} / {{ session.progress.value.total }}
+      </p>
 
-      <div v-if="!session.complete.value">
+      <div v-if="session.progress.value.total === 0">
+        <p>Nothing due right now — come back later!</p>
+        <AppButton class="mt-3" @click="loadDeck(currentDeckId)">Check for more cards</AppButton>
+      </div>
+
+      <div v-else-if="!session.complete.value">
         <!-- Duplicated below the card for larger screens, where there's room to scroll-free grade without it.
              Mobile-only here: on a phone, a revealed card (front + back + media) often runs past the fold, so
              a grader relying only on the below copy has to scroll down every single card. -->
         <GradeButtons v-if="session.revealed.value" class="sm:hidden" @grade="session.grade($event)" />
+
+        <button type="button" class="text-xs text-muted hover:text-text hover:underline" @click="confirmSuspend">
+          Not a real card? Suspend it
+        </button>
 
         <button
           type="button"
@@ -49,7 +60,7 @@
 
       <div v-else class="flex flex-wrap gap-2">
         <p class="w-full">Session complete!</p>
-        <AppButton @click="session.restart()">Restart this deck</AppButton>
+        <AppButton @click="loadDeck(currentDeckId)">Check for more cards</AppButton>
       </div>
     </div>
   </div>
@@ -100,18 +111,29 @@ function playSound(event) {
 const renderedFront = computed(() => (session.value?.currentCharacter.value ? renderCardHtml(session.value.currentCharacter.value.front) : ''))
 const renderedBack = computed(() => (session.value?.currentCharacter.value ? renderCardHtml(session.value.currentCharacter.value.back) : ''))
 
+// Fetches this deck's actual study queue (due cards, uncapped, plus new
+// cards up to today's remaining cap — functions/api/reviews/due.js) rather
+// than every card in the deck. Re-fetched (not just re-shuffled) by both
+// "Check for more cards" buttons below, so an "again"-graded card
+// (due immediately) correctly reappears, graded-away cards correctly drop
+// out, and an exhausted new-card budget correctly stays exhausted.
 async function loadDeck(deckId) {
   session.value = null
   notFound.value = false
-  const response = await fetch(`/api/decks/${deckId}/cards`)
+  const response = await fetch(`/api/reviews/due?deck=${deckId}`)
   if (response.status === 404) {
     notFound.value = true
     return
   }
   if (!response.ok) throw new Error(`Failed to load deck: ${response.status}`)
   const body = await response.json()
-  cachedCards = body.cards
+  cachedCards = body.queue.map((item) => ({ id: item.cardId, front: item.front, back: item.back }))
   session.value = useCardSession(deckId, () => cachedCards)
+}
+
+function confirmSuspend() {
+  if (!window.confirm('Suspend this card? It will be permanently removed from study.')) return
+  session.value.suspend()
 }
 
 let currentDeckId = route.params.deckId

@@ -48,4 +48,11 @@ describe('useCardSession (via useFlashcardSession)', () => {
     expect(session.complete.value).toBe(true)
     expect(fetch).toHaveBeenCalledWith('/api/reviews/hiragana-n', expect.objectContaining({ method: 'POST' }))
   })
+
+  it('suspend advances to the next card without waiting on the network request', () => {
+    const session = useFlashcardSession('nn')
+    session.suspend()
+    expect(session.complete.value).toBe(true)
+    expect(fetch).toHaveBeenCalledWith('/api/reviews/hiragana-n/suspend', expect.objectContaining({ method: 'POST' }))
+  })
 })

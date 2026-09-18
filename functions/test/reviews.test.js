@@ -19,6 +19,7 @@ async function getDue(deck = 'hiragana') {
 // each test starts from a clean review-state table regardless.
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM card_review_state')
+  await env.DB.exec('DELETE FROM card_suspensions')
   await env.DB.exec('DELETE FROM decks')
   await env.DB.exec('DELETE FROM cards')
 })
@@ -44,7 +45,7 @@ describe('GET /api/reviews/due', () => {
 
   it('rejects an unknown deck', async () => {
     const response = await getDue('not-a-deck')
-    expect(response.status).toBe(400)
+    expect(response.status).toBe(404)
   })
 
   it('reports every card as new when nothing has been reviewed', async () => {
