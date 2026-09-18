@@ -23,11 +23,11 @@
           @click="session.reveal()"
         >
           <!-- eslint-disable-next-line vue/no-v-html -- Anki's own card HTML, best-effort rendered (FR-013); media refs already point at this app's own /api/media endpoint -->
-          <div v-html="renderedFront"></div>
+          <div class="card-media" v-html="renderedFront"></div>
           <template v-if="session.revealed.value">
             <hr class="w-full border-border" />
             <!-- eslint-disable-next-line vue/no-v-html -->
-            <div v-html="renderedBack"></div>
+            <div class="card-media" v-html="renderedBack"></div>
           </template>
         </button>
 
@@ -108,3 +108,17 @@ onActivated(() => {
   syncToDeck(route.params.deckId)
 })
 </script>
+
+<style scoped>
+/* Anki decks commonly embed full-size illustrations (real-world samples run
+   to 800x800+) meant for Anki's own desktop/mobile card view, not a web
+   flashcard tile — left unconstrained, one image can push the whole card
+   past the viewport. Capped and centered here instead of at import time so
+   the original media stays untouched (e.g. for a future full-size view). */
+.card-media :deep(img) {
+  max-width: 100%;
+  max-height: 12rem;
+  object-fit: contain;
+  margin-inline: auto;
+}
+</style>
