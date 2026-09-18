@@ -2,8 +2,19 @@ name = "workflows-anki-import"
 main = "src/index.js"
 compatibility_date = "2026-08-15"
 
+# Enabled from the dashboard while debugging a stuck production deck import
+# (a big deck's media processing runs here) — pinned here too so it survives
+# the next `wrangler deploy` instead of reverting to disabled.
+[observability]
+enabled = true
+
+  [observability.logs]
+  enabled = true
+  invocation_logs = true
+  head_sampling_rate = 1
+
 # Same D1/R2 bindings as the main project's wrangler.toml — this worker only
-# ever touches decks/cards/media_assets/media_import_jobs rows and R2 objects
+# ever touches decks/cards/media_assets/deck_import_jobs rows and R2 objects
 # that the main project also owns.
 [[d1_databases]]
 binding = "DB"
@@ -15,6 +26,6 @@ binding = "MEDIA"
 bucket_name = "hiragana-media"
 
 [[workflows]]
-binding = "MEDIA_IMPORT_WORKFLOW"
-name = "media-import-workflow"
-class_name = "MediaImportWorkflow"
+binding = "DECK_IMPORT_WORKFLOW"
+name = "deck-import-workflow"
+class_name = "DeckImportWorkflow"

@@ -1,7 +1,8 @@
-// Parses an Anki .apkg export entirely in the browser (specs/003-anki-deck-import,
-// research.md §1-2) — nothing here ever sends the raw file to the backend. The
-// backend only ever receives the extracted result: card text (useDeckImport.js's
-// POST /api/decks/import) and referenced media bytes (its POST .../media loop).
+// Parses an Anki .apkg export — used only server-side now, inside the
+// DeckImportWorkflow (workflows/anki-import), never in the browser (see
+// specs/003-anki-deck-import for the original design, workflows/anki-import's
+// header comment for why this moved server-side: proxying/parsing a large
+// deck client-driven kept hitting Cloudflare's per-request resource limits).
 //
 // A .apkg is a zip containing:
 //   - collection.anki21b (current Anki) or collection.anki21/.anki2 (older) —
@@ -10,37 +11,37 @@
 //     to real filenames — either a plain JSON object (older Anki) or a
 //     Zstandard-compressed, protobuf-encoded list of {name, size, sha1} (current
 //     Anki). Verified against a real ~100MB sample deck during planning.
+//
+// Split into two phases, not one combined parse, because eagerly decompressing
+// every referenced media file (a real deck's media can total ~100MB
+// decompressed) into one in-memory structure risks Workers' 128MB-per-isolate
+// memory cap — the same failure family (`exceededMemory`) as the CPU-limit bug
+// this redesign fixes. `extractDeckMetadata` only reads card text and *which*
+// filenames each card references; `decompressMediaFile` decompresses exactly
+// one file on demand, called by the Workflow immediately before that file's R2
+// write and discarded right after — never more than one chunk's worth in
+// memory at a time.
 import JSZip from 'jszip'
 import { decompress as zstdDecompress } from 'fzstd'
 import initSqlJs from 'sql.js'
-import sqlWasmUrl from 'sql.js/dist/sql-wasm.wasm?url'
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd]
 const FIELD_SEPARATOR = '\x1f'
 const DEFAULT_DECK_ID = 1 // Anki's built-in "Default" deck — imported only if it actually holds cards
 
-// sql.js's Emscripten glue code resolves its .wasm via internal fetch/fs
-// heuristics keyed off a `new URL(..., import.meta.url)` path that Vite's
-// import-analysis rewrites at build time — a path only a real browser can
-// fetch, so under Vitest (which simulates browser import.meta.url semantics
-// inside plain Node — see ankiImport.test.js) it 404s/ENOENTs regardless of
-// `locateFile`/`wasmBinary`. Supplying `instantiateWasm` bypasses all of
-// that: it's Emscripten's own documented escape hatch, checked before any of
-// its internal URL logic runs, so we fetch/read the bytes ourselves (browser
-// vs Node) and instantiate directly.
-async function loadWasmBinary() {
-  const isNode = typeof process !== 'undefined' && process.versions?.node
-  if (isNode) {
-    const [{ readFile }, { default: path }] = await Promise.all([import('node:fs/promises'), import('node:path')])
-    return readFile(path.join(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm'))
-  }
-  const response = await fetch(sqlWasmUrl)
-  return new Uint8Array(await response.arrayBuffer())
+// sql.js's WASM loading is environment-specific (Node for tests, a static
+// bundled import for the Workflow — see workflows/anki-import/src/loadSqlJs.js
+// for that path, which WebAssembly.instantiate()-from-fetched-bytes can't use:
+// Workers/Workflows disallow dynamic wasm compilation the same way they
+// disallow eval). This is the Node-only path, used by ankiImport.test.js.
+async function loadWasmBinaryForNode() {
+  const [{ readFile }, { default: path }] = await Promise.all([import('node:fs/promises'), import('node:path')])
+  return readFile(path.join(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm'))
 }
 
 let sqlJsPromise
-function loadSqlJs() {
-  sqlJsPromise ??= loadWasmBinary().then((wasmBytes) =>
+export function loadSqlJs() {
+  sqlJsPromise ??= loadWasmBinaryForNode().then((wasmBytes) =>
     initSqlJs({
       instantiateWasm(imports, successCallback) {
         WebAssembly.instantiate(wasmBytes, imports).then(({ instance }) => successCallback(instance))
@@ -221,31 +222,6 @@ function stripUnsupportedCollations(SQL, sqliteBytes) {
   }
 }
 
-/**
- * Parses a `.apkg` file's bytes into `{ decks, media }`:
- *   decks: [{ ankiDeckId, name, cards: [{ ankiNoteId, front, back, media: [{filename, sizeBytes}] }] }]
- *   media: Map<filename, Uint8Array> — only filenames actually referenced by an extracted card
- */
-export async function parseAnkiPackage(arrayBuffer) {
-  const zip = await JSZip.loadAsync(arrayBuffer)
-
-  const collectionEntryName = pickCollectionEntryName(zip)
-  const rawCollectionBytes = await zip.file(collectionEntryName).async('uint8array')
-  const sqliteBytes = await maybeDecompress(rawCollectionBytes)
-
-  const mediaManifestFile = zip.file('media')
-  const manifest = mediaManifestFile ? decodeMediaManifest(await mediaManifestFile.async('uint8array')) : {}
-  const entryNameByFilename = new Map(Object.entries(manifest).map(([entry, filename]) => [filename, entry]))
-
-  const SQL = await loadSqlJs()
-  const db = new SQL.Database(stripUnsupportedCollations(SQL, sqliteBytes))
-  try {
-    return await extractDecks(db, zip, entryNameByFilename)
-  } finally {
-    db.close()
-  }
-}
-
 function queryAll(db, sql, params = []) {
   const stmt = db.prepare(sql)
   try {
@@ -272,27 +248,63 @@ function loadNoteType(db, notetypeId, cache) {
   return notetype
 }
 
-async function collectMedia(zip, entryNameByFilename, filenames, mediaOut) {
-  const results = []
-  for (const filename of filenames) {
-    if (!mediaOut.has(filename)) {
-      const entryName = entryNameByFilename.get(filename)
-      const entry = entryName !== undefined ? zip.file(entryName) : null
-      // Modern Anki packages zstd-compress every individual media entry,
-      // not just the collection database (verified against a real ~100MB
-      // sample deck: all 4,354 media files were compressed) — without this,
-      // every extracted file is silently still-compressed bytes served
-      // under its real content type, which looks fine by size/hash but
-      // never actually renders or plays.
-      if (entry) mediaOut.set(filename, await maybeDecompress(await entry.async('uint8array')))
-    }
-    const bytes = mediaOut.get(filename)
-    if (bytes) results.push({ filename, sizeBytes: bytes.length })
-  }
-  return results
+/**
+ * Decompresses exactly one media file on demand from an already-open zip
+ * (from `extractDeckMetadata`'s `zip`/`entryNameByFilename`) — returns
+ * `Uint8Array | null` (null if the file isn't actually present in the
+ * archive, e.g. referenced by a card but missing from the export). Called
+ * once per file, immediately before that file is written to R2, then
+ * discarded — never batched or accumulated, so peak memory only ever holds
+ * one file's decompressed bytes at a time regardless of deck size.
+ */
+export async function decompressMediaFile(zip, entryNameByFilename, filename) {
+  const entryName = entryNameByFilename.get(filename)
+  const entry = entryName !== undefined ? zip.file(entryName) : null
+  if (!entry) return null
+  // Modern Anki packages zstd-compress every individual media entry, not
+  // just the collection database (verified against a real ~100MB sample
+  // deck: all 4,354 media files were compressed) — without this, the
+  // extracted file is silently still-compressed bytes served under its real
+  // content type, which looks fine by size/hash but never actually renders
+  // or plays.
+  return maybeDecompress(await entry.async('uint8array'))
 }
 
-async function extractDecks(db, zip, entryNameByFilename) {
+/**
+ * Parses a `.apkg` file's bytes into deck/card metadata — WITHOUT
+ * decompressing any media (see module header comment for why). `SQL` is an
+ * already-initialized sql.js module (Node path: `loadSqlJs()` above; Workflow
+ * path: workflows/anki-import/src/loadSqlJs.js's static-wasm-import version).
+ *
+ * Returns `{ decks, zip, entryNameByFilename }`:
+ *   decks: [{ ankiDeckId, name, cards: [{ ankiNoteId, front, back, mediaFilenames: string[] }] }]
+ *   zip, entryNameByFilename: kept alive for later `decompressMediaFile` calls
+ *     against the same archive — callers must not let `parseAnkiPackage`'s
+ *     caller discard these before every referenced file has been processed.
+ */
+export async function extractDeckMetadata(arrayBuffer, SQL) {
+  const zip = await JSZip.loadAsync(arrayBuffer)
+
+  const collectionEntryName = pickCollectionEntryName(zip)
+  const rawCollectionBytes = await zip.file(collectionEntryName).async('uint8array')
+  const sqliteBytes = await maybeDecompress(rawCollectionBytes)
+
+  const mediaManifestFile = zip.file('media')
+  const manifest = mediaManifestFile ? decodeMediaManifest(await mediaManifestFile.async('uint8array')) : {}
+  const entryNameByFilename = new Map(Object.entries(manifest).map(([entry, filename]) => [filename, entry]))
+
+  const db = new SQL.Database(stripUnsupportedCollations(SQL, sqliteBytes))
+  let decks
+  try {
+    decks = extractDecks(db)
+  } finally {
+    db.close() // no more D1/SQLite queries needed once card text is extracted — media decompression below only needs `zip`/`entryNameByFilename`
+  }
+
+  return { decks, zip, entryNameByFilename }
+}
+
+function extractDecks(db) {
   const deckRows = queryAll(
     db,
     `SELECT DISTINCT d.id, d.name FROM decks d JOIN cards c ON c.did = d.id WHERE d.id != ?`,
@@ -306,7 +318,6 @@ async function extractDecks(db, zip, entryNameByFilename) {
   }
 
   const notetypeCache = new Map()
-  const media = new Map()
   const decks = []
 
   for (const deckRow of deckRows) {
@@ -327,14 +338,13 @@ async function extractDecks(db, zip, entryNameByFilename) {
       if (!template) continue // note type with no templates at all — nothing to render
 
       const { front, back } = renderCard(template.qfmt, template.afmt, fields)
-      const referencedFilenames = new Set([...extractMediaFilenames(front), ...extractMediaFilenames(back)])
-      const cardMedia = await collectMedia(zip, entryNameByFilename, referencedFilenames, media)
+      const mediaFilenames = [...new Set([...extractMediaFilenames(front), ...extractMediaFilenames(back)])]
 
-      cards.push({ ankiNoteId: row.noteId, front, back, media: cardMedia })
+      cards.push({ ankiNoteId: row.noteId, front, back, mediaFilenames })
     }
 
     if (cards.length > 0) decks.push({ ankiDeckId: deckRow.id, name: deckRow.name, cards })
   }
 
-  return { decks, media }
+  return decks
 }

@@ -1,14 +1,14 @@
-// Per-file media-processing logic shared by the media-import Workflow
-// (workflows/anki-import/src/index.js) and its unit tests
-// (functions/test/media-import-processing.test.js). Extracted as a plain,
-// framework-free function (mirrors src/scheduling/scheduler.js's split from
-// its endpoint) so it's testable without a live Workflow runtime.
+// Per-file media processing, called by the DeckImportWorkflow's chunk steps
+// (workflows/anki-import/src/index.js) once per referenced media file —
+// upserts its media_assets row, writes it to its permanent R2 key, and
+// rewrites any card in the deck that still references the raw filename to
+// point at /api/media/<id>.
 //
-// This is a straight port of what used to run synchronously in
-// functions/api/decks/[deckId]/media.js (removed) — same D1/R2 calls, same
-// D1 quirks worked around (instr() over LIKE, id reuse on re-upload) — just
-// now called once per file from inside a Workflow step instead of an HTTP
-// handler, so a crash/retry doesn't lose the whole batch.
+// Unlike the previous design (functions/api/decks/[deckId]/media/upload.js +
+// this file's old processMediaFile), there's no temp-key R2 staging step —
+// `bytes` come directly from the Workflow's in-memory parsed zip
+// (src/data/ankiImport.js's decompressMediaFile, called immediately before
+// this), so there's nothing to fetch or clean up here.
 
 const CONTENT_TYPES = {
   mp3: 'audio/mpeg',
@@ -35,56 +35,31 @@ export function rewriteReference(text, filename, url) {
     .replaceAll(`src='${filename}'`, `src='${url}'`)
 }
 
-export function tempMediaKey(deckId, filename) {
-  return `imports/${deckId}/${filename}`
-}
-
-// Thrown for failures a retry can never fix (e.g. the uploaded file is
-// simply missing) — the Workflow maps this to a NonRetryableError so it
-// doesn't keep re-running the same doomed step.
-export class MissingUploadError extends Error {}
-
 /**
- * Moves one already-uploaded file (functions/api/decks/[deckId]/media/
- * upload.js put it at its temp key) to its permanent R2 key, upserts its
- * media_assets row, rewrites any card in the deck that still references the
- * raw filename to point at /api/media/<id>, then deletes the temp object.
- *
- * `db` is a D1Database binding, `mediaBucket` an R2Bucket binding — both
- * shared between the deck's main D1/R2 and this Workflow (same bindings,
- * different Worker).
+ * `db` is a D1Database binding, `mediaBucket` an R2Bucket binding. `bytes` is
+ * this file's already-decompressed content, or `null` if the card referenced
+ * a filename the archive doesn't actually contain — matches the old
+ * client-side behavior of surfacing a missing file as a silent skip, not a
+ * hard failure (a genuinely malformed reference isn't something a retry can
+ * fix, and one bad reference shouldn't abort an otherwise-good import).
  */
-export async function processMediaFile({ db, mediaBucket, deckId, filename }) {
-  const tempKey = tempMediaKey(deckId, filename)
-  const tempObject = await mediaBucket.get(tempKey)
+export async function processMediaFromParsedDeck({ db, mediaBucket, deckId, filename, bytes }) {
+  if (bytes === null) return { filename, skipped: true }
 
   const existing = await db
     .prepare('SELECT id, size_bytes FROM media_assets WHERE deck_id = ? AND filename = ?')
     .bind(deckId, filename)
     .first()
 
-  if (!tempObject) {
-    // A Workflow step retries its *entire* callback from the top on any
-    // transient failure — if this file already completed (including its
-    // temp-object cleanup below) earlier in the same failed-and-retried
-    // step, its temp key is legitimately gone. That's success, not
-    // failure: only a file with no existing row either was genuinely never
-    // uploaded.
-    if (existing) return { filename, mediaAssetId: existing.id, alreadyProcessed: true }
-    throw new MissingUploadError(`No uploaded media found for ${deckId}/${filename}`)
-  }
-
-  const bytes = await tempObject.arrayBuffer()
   const contentType = contentTypeFor(filename)
   // Reusing the existing id is only correct when the content actually
-  // hasn't changed — GET /api/media/:id serves it with an "immutable"
-  // cache header, promising a given id's bytes never change. Reuse it for
-  // a same-content re-run (the self-heal case above, or a harmless
-  // re-upload of identical bytes); mint a fresh id whenever the size
-  // differs from what's on record, so a real content change (e.g. this
-  // session's zstd-decompress fix suddenly changing every file's byte
-  // length) gets a new URL instead of silently rewriting an old one that
-  // browsers may already have cached.
+  // hasn't changed — GET /api/media/:id serves it with an "immutable" cache
+  // header, promising a given id's bytes never change. Reuse it for a
+  // same-content re-run (e.g. a step retry re-decompressing the same file,
+  // or a harmless re-import of an unchanged deck); mint a fresh id whenever
+  // the size differs from what's on record, so a real content change gets a
+  // new URL instead of silently rewriting one browsers may already have
+  // cached.
   const contentUnchanged = existing?.size_bytes === bytes.byteLength
   const mediaAssetId = contentUnchanged ? existing.id : crypto.randomUUID()
 
@@ -118,8 +93,6 @@ export async function processMediaFile({ db, mediaBucket, deckId, filename }) {
       .bind(rewriteReference(card.front, filename, mediaUrl), rewriteReference(card.back, filename, mediaUrl), card.id)
       .run()
   }
-
-  await mediaBucket.delete(tempKey)
 
   return { filename, mediaAssetId }
 }

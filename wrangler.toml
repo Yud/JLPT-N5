@@ -14,14 +14,22 @@ binding = "MEDIA"
 bucket_name = "hiragana-media"
 
 # Pages Functions can't define a Workflow directly (WorkflowEntrypoint must
-# live in its own Worker) — this triggers the one in workflows/anki-import,
-# deployed as its own project (see .github/workflows/deploy.yml). Local dev:
-# run `npm run dev:workflow` alongside `npm run dev:api`; wrangler's local
-# dev registry resolves the binding to that process. `dev:workflow` passes
-# --persist-to so it shares this project's local D1/R2 state instead of its
-# own separate (and, on a fresh run, empty/schema-less) one — without it,
-# media processing fails with D1 errors like "no such table: media_assets",
-# or silently no-ops against the wrong local data.
+# live in its own Worker) — this triggers the DeckImportWorkflow in
+# workflows/anki-import, deployed as its own project (see .github/workflows/
+# deploy.yml). Local dev: run `npm run dev:workflow` alongside `npm run
+# dev:api`; wrangler's local dev registry resolves the binding to that
+# process. `dev:workflow` passes --persist-to so it shares this project's
+# local D1/R2 state instead of its own separate (and, on a fresh run,
+# empty/schema-less) one — without it, import processing fails with D1
+# errors like "no such table: deck_import_jobs", or silently no-ops against
+# the wrong local data.
 [[services]]
-binding = "MEDIA_IMPORT_WORKFLOW_TRIGGER"
+binding = "DECK_IMPORT_WORKFLOW_TRIGGER"
 service = "workflows-anki-import"
+
+# R2 API credentials (functions/api/decks/import.js) for presigning direct
+# browser-to-R2 upload URLs — an R2 API token scoped to just the
+# hiragana-media bucket, set via `wrangler pages secret put`, not this file.
+# CF_ACCOUNT_ID is not a secret (it's not sensitive on its own), but is
+# still set the same way for symmetry with the two secrets it's used
+# alongside — see README.md's Local API development section.

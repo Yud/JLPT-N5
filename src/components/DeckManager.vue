@@ -8,22 +8,18 @@
       <input ref="fileInput" type="file" accept=".apkg" class="hidden" @change="onFileChosen" />
       <AppButton
         variant="primary"
-        :disabled="['parsing', 'uploading', 'processing'].includes(importer.status.value)"
+        :disabled="['uploading', 'processing'].includes(importer.status.value)"
         @click="fileInput.click()"
       >
         Choose file…
       </AppButton>
 
-      <div v-if="importer.status.value === 'parsing'" class="mt-3 text-sm text-muted">Reading the file…</div>
-      <div v-else-if="importer.status.value === 'uploading'" class="mt-3 text-sm text-muted">
-        Uploading deck {{ importer.progress.value.decksImported + 1 }} of {{ importer.progress.value.decksTotal }}
-        <template v-if="importer.progress.value.mediaTotal > 0">
-          (media {{ importer.progress.value.mediaUploaded }} / {{ importer.progress.value.mediaTotal }})
-        </template>
-      </div>
+      <div v-if="importer.status.value === 'uploading'" class="mt-3 text-sm text-muted">Uploading file…</div>
       <div v-else-if="importer.status.value === 'processing'" class="mt-3 text-sm text-muted">
-        Processing media {{ importer.progress.value.mediaProcessed }} / {{ importer.progress.value.mediaProcessTotal }} (deck
-        {{ importer.progress.value.decksImported + 1 }} of {{ importer.progress.value.decksTotal }})
+        Processing deck {{ importer.progress.value.decksDone }} / {{ importer.progress.value.decksTotal || '?' }}
+        <template v-if="importer.progress.value.mediaTotal > 0">
+          (media {{ importer.progress.value.mediaDone }} / {{ importer.progress.value.mediaTotal }})
+        </template>
       </div>
       <p v-else-if="importer.status.value === 'done'" class="mt-3 text-sm text-green-700 dark:text-green-400">
         {{ importer.message.value }}

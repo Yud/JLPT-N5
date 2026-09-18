@@ -16,7 +16,7 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM cards')
   await env.DB.exec('DELETE FROM media_assets')
   await env.DB.exec('DELETE FROM card_review_state')
-  await env.DB.exec('DELETE FROM media_import_jobs')
+  await env.DB.exec('DELETE FROM card_suspensions')
 })
 
 describe('GET /api/decks', () => {
@@ -64,8 +64,8 @@ describe('DELETE /api/decks/:deckId', () => {
       .bind('test@example.com', 'imported-555-1', Date.now())
       .run()
     await env.DB
-      .prepare('INSERT INTO media_import_jobs (id, deck_id, status, total, done, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind('job-555', '555', 'processing', 1, 0, Date.now(), Date.now())
+      .prepare('INSERT INTO card_suspensions (user_email, card_id, suspended_at) VALUES (?, ?, ?)')
+      .bind('test@example.com', 'imported-555-1', Date.now())
       .run()
   }
 
@@ -94,7 +94,7 @@ describe('DELETE /api/decks/:deckId', () => {
     expect(await env.DB.prepare('SELECT * FROM cards WHERE deck_id = ?').bind('555').first()).toBeNull()
     expect(await env.DB.prepare('SELECT * FROM media_assets WHERE deck_id = ?').bind('555').first()).toBeNull()
     expect(await env.DB.prepare('SELECT * FROM card_review_state WHERE card_id = ?').bind('imported-555-1').first()).toBeNull()
-    expect(await env.DB.prepare('SELECT * FROM media_import_jobs WHERE deck_id = ?').bind('555').first()).toBeNull()
+    expect(await env.DB.prepare('SELECT * FROM card_suspensions WHERE card_id = ?').bind('imported-555-1').first()).toBeNull()
     expect(await env.MEDIA.get('asset-555')).toBeNull()
   })
 
