@@ -63,13 +63,49 @@ import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 // batch has no single query whose bound-parameter count scales with the
 // whole chunk — each INSERT only binds that one card's own values.
 //
+// One more limit, separate from all of the above and NOT raised by
+// upgrading to Workers Paid: memory is a fixed 128 MB per isolate on every
+// plan ("Memory per isolate: 128 MB", Workers platform limits page — the
+// table lists 128 MB under both Free and Paid, unlike CPU time's 10ms vs
+// 30s+configurable). This deck's raw upload is 108MB — holding it in a
+// variable that `run()` itself keeps across the whole multi-step execution
+// leaves almost no headroom, and got hit for real: "exceeded CPU or memory
+// limits outside of a step" recurred, several media chunks into a real
+// import, well after the CPU-time fix above. It wasn't a CPU regression —
+// an async function's local variables stay part of its suspended state
+// across every `await` for as long as the function hasn't returned, so a
+// 108MB `rawBytes` declared in run() itself would still be retained through
+// dozens of later `step.do()` calls even though nothing read it again after
+// the first one. Fixed by never letting run() hold the archive's bytes at
+// all: fetchAndExtractDeckMetadata and each media chunk step below fetch
+// their own fresh copy from R2, scoped to their own function/callback frame,
+// so it's eligible for GC again as soon as that frame returns — see each
+// site's own comment.
+//
 // Re-verify against Cloudflare Workers Observability after deploying, not
-// just local timing — local dev doesn't enforce real CPU-time accounting or
-// D1's subrequest cap the same way, which is why both the original
-// (pre-fflate) design and, separately, the un-batched media writes passed
-// local end-to-end testing but still failed in production.
+// just local timing — local dev doesn't enforce real CPU-time accounting,
+// D1's subrequest caps, or the 128MB memory ceiling the same way production
+// does, which is why the CPU-time issue, the D1 batching issue, and this
+// memory issue each passed local end-to-end testing but still failed in
+// production in turn.
 const MEDIA_CHUNK_SIZE = 90
 const RENDER_CHUNK_SIZE = 150
+
+/**
+ * Fetches the raw upload from R2 and extracts deck metadata from it — kept
+ * as its own function, not inlined into run(), specifically so its local
+ * `arrayBuffer` (the whole archive) is scoped to THIS function's call frame.
+ * Once this returns, that frame — and the 100MB+ it was holding — becomes
+ * eligible for GC, instead of staying retained as part of run()'s own
+ * suspended state for the rest of a long, many-step execution (see the
+ * memory-limit comment above `MEDIA_CHUNK_SIZE`).
+ */
+async function fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId, SQL }) {
+  const object = await mediaBucket.get(r2Key)
+  if (!object) throw new NonRetryableError(`Raw upload missing for job ${jobId}`)
+  const arrayBuffer = await object.arrayBuffer()
+  return extractDeckMetadata(arrayBuffer, SQL)
+}
 
 export class DeckImportWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
@@ -92,17 +128,10 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       // DB, media manifest) it's asked for here, unlike the JSZip-based
       // version this replaced, which built a full ~4,358-entry index up
       // front and was the dominant cost that made this phase fail outside a
-      // step for a deck this size.
-      const object = await mediaBucket.get(r2Key)
-      if (!object) throw new NonRetryableError(`Raw upload missing for job ${jobId}`)
-      const arrayBuffer = await object.arrayBuffer()
+      // step for a deck this size. See fetchAndExtractDeckMetadata's own doc
+      // comment for why it's a separate function rather than inlined here.
       const SQL = await loadSqlJsForWorkflow()
-      // `rawBytes`/`entryNameByFilename` are kept alive only in this run()'s
-      // closure — never returned from a step — so the chunk steps below can
-      // decompress specific media files on demand without re-fetching from
-      // R2. `notetypeCache` is likewise closure-only; renderCardChunk (pure)
-      // needs it but the SQLite connection it came from is already closed.
-      const { decks, rawBytes, entryNameByFilename, notetypeCache } = await extractDeckMetadata(arrayBuffer, SQL)
+      const { decks, entryNameByFilename, notetypeCache } = await fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId, SQL })
 
       await step.do('update-deck-total', async () => {
         await db
@@ -155,16 +184,25 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
           // every chunk that finished before the restart.
           mediaDoneTotal += chunk.length
           await step.do(`media-${deck.ankiDeckId}-${i}`, async () => {
-            // Decompresses this whole chunk in one pass over the still-in-
-            // memory archive bytes — see decompressMediaFiles's doc comment
-            // for why that's cheaper than one call per file — then writes
-            // each file to R2 and its D1 rows in one batch (processMediaChunk
-            // — see its module header comment for why that's not done
-            // per-file: D1 caps a step at 50 queries/invocation on Free, and
-            // this chunk size assumes batching, not one-by-one writes),
-            // never accumulating more than one chunk's worth of bytes in
-            // memory at a time.
-            const decompressed = await decompressMediaFiles(rawBytes, entryNameByFilename, chunk)
+            // Re-fetches the raw archive from R2 fresh for THIS chunk, rather
+            // than reusing one copy held across the whole Workflow run — see
+            // the memory-limit comment above MEDIA_CHUNK_SIZE. The refetched
+            // bytes are a local of this step.do() callback, so they're
+            // eligible for GC as soon as this callback returns, regardless of
+            // how many more steps the rest of run() still has to process.
+            // Costs an extra R2 read per chunk (~44 of them for this deck);
+            // R2 reads are cheap, a 128MB-isolate crash is not.
+            const object = await mediaBucket.get(r2Key)
+            const archiveBytes = new Uint8Array(await object.arrayBuffer())
+            // Decompresses this whole chunk in one pass over that archive —
+            // see decompressMediaFiles's doc comment for why that's cheaper
+            // than one call per file — then writes each file to R2 and its D1
+            // rows in one batch (processMediaChunk — see its module header
+            // comment for why that's not done per-file: D1 caps a step at 50
+            // queries/invocation on Free, and this chunk size assumes
+            // batching, not one-by-one writes), never accumulating more than
+            // one chunk's worth of decompressed bytes in memory at a time.
+            const decompressed = await decompressMediaFiles(archiveBytes, entryNameByFilename, chunk)
             const files = chunk.map((filename) => ({ filename, bytes: decompressed.get(filename) }))
             await processMediaChunk({ db, mediaBucket, deckId, files })
             await db

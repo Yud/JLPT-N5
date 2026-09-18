@@ -254,12 +254,14 @@ describe('extractDeckMetadata', () => {
       mediaFiles: { 0: audioBytes, 1: new Uint8Array([9, 9]) },
     })
 
-    const { decks, notetypeCache, rawBytes, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const { decks, notetypeCache, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
     const [card] = renderCardChunk(decks[0].cardRows, notetypeCache)
     expect(card.mediaFilenames).toEqual(['answer.mp3'])
     // decompressMediaFile is a separate, deliberately un-eager phase (see
-    // module header comment) — not called during extractDeckMetadata itself.
-    expect(await decompressMediaFile(rawBytes, entryNameByFilename, 'answer.mp3')).toEqual(audioBytes)
+    // module header comment) — not called during extractDeckMetadata itself,
+    // and takes the archive's bytes as its own argument rather than getting
+    // them back from extractDeckMetadata (see that function's doc comment).
+    expect(await decompressMediaFile(new Uint8Array(buffer), entryNameByFilename, 'answer.mp3')).toEqual(audioBytes)
   })
 
   it('best-effort renders a cloze note by revealing the answer rather than skipping the card (FR-013)', async () => {
@@ -305,15 +307,15 @@ describe('decompressMediaFile', () => {
       mediaFiles: { 0: zstdCompressSync(realAudioBytes) },
     })
 
-    const { rawBytes, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(await decompressMediaFile(rawBytes, entryNameByFilename, 'answer.mp3')).toEqual(realAudioBytes)
+    const { entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    expect(await decompressMediaFile(new Uint8Array(buffer), entryNameByFilename, 'answer.mp3')).toEqual(realAudioBytes)
   })
 
   it('returns null for a filename the archive does not actually contain', async () => {
     const collectionBytes = await buildCollectionDb({ decks: [], notetype: BASIC_NOTETYPE, notes: [] })
     const buffer = await buildApkgZip({ collectionEntryName: 'collection.anki2', collectionBytes })
 
-    const { rawBytes, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(await decompressMediaFile(rawBytes, entryNameByFilename, 'missing.mp3')).toBeNull()
+    const { entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    expect(await decompressMediaFile(new Uint8Array(buffer), entryNameByFilename, 'missing.mp3')).toBeNull()
   })
 })

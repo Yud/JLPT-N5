@@ -326,11 +326,23 @@ export async function decompressMediaFile(rawBytes, entryNameByFilename, filenam
  * Workflow path: workflows/anki-import/src/loadSqlJs.js's static-wasm-import
  * version).
  *
- * Returns `{ decks, rawBytes, entryNameByFilename, notetypeCache }`:
+ * Deliberately does NOT return the archive's raw bytes, even though the
+ * caller will need them again later for `decompressMediaFiles` — a real
+ * archive can be 100MB+, and Workers caps a whole isolate at 128MB of memory
+ * (fixed, same on every plan, unlike the CPU-time limit — see the Workflow's
+ * header comment). Handing the caller a reference it would hold onto for an
+ * entire multi-step Workflow run risks that cap on its own, regardless of
+ * how carefully CPU time and D1 usage are chunked. Callers should re-fetch
+ * the archive fresh, scoped to wherever they actually need its bytes (e.g.
+ * inside each step.do() callback, not in the Workflow's own outer scope), so
+ * it's eligible for GC again as soon as that scope is done with it.
+ *
+ * Returns `{ decks, entryNameByFilename, notetypeCache }`:
  *   decks: [{ ankiDeckId, name, cardRows: [{ cardId, cardOrd, noteId, notetypeId, flds }] }]
- *   rawBytes: the whole archive's bytes, kept for later `decompressMediaFiles`
- *     calls looking up specific entries by name — callers must not discard
- *     this before every referenced media file has been processed.
+ *   entryNameByFilename: real filename -> the zip's numbered entry name, for
+ *     later `decompressMediaFiles` calls (which take the archive's bytes
+ *     freshly, as their own argument, precisely so this function doesn't
+ *     have to hand them back).
  *   notetypeCache: every notetype (fields + templates) referenced by any
  *     returned card, pre-loaded while the SQLite connection was still open —
  *     callers pass this straight to `renderCardChunk`, which needs it to
@@ -351,10 +363,10 @@ export async function extractDeckMetadata(arrayBuffer, SQL) {
   try {
     ;({ decks, notetypeCache } = extractDeckCardRows(db))
   } finally {
-    db.close() // no more D1/SQLite queries needed once card rows + the notetype cache are extracted — rendering below is pure, and media decompression only needs `rawBytes`/`entryNameByFilename`
+    db.close() // no more D1/SQLite queries needed once card rows + the notetype cache are extracted — rendering below is pure, and media decompression only needs entryNameByFilename plus a fresh copy of the archive's bytes
   }
 
-  return { decks, rawBytes, entryNameByFilename, notetypeCache }
+  return { decks, entryNameByFilename, notetypeCache }
 }
 
 function extractDeckCardRows(db) {
