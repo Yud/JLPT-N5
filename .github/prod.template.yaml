@@ -14,3 +14,11 @@
 # CI scan clean).
 WANIKANI_API_KEY: ${{ secrets.WANIKANI_API_KEY }}
 WANIKANI_MIN_SRS_STAGE: "6"
+# R2 API token (Object Read & Write, scoped to the hiragana-media bucket —
+# see R2 dashboard > Manage R2 API Tokens) used by functions/api/decks/
+# import.js to presign direct browser-to-R2 upload URLs.
+R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+# Reuses the same secret the wrangler-action steps below already use for
+# `accountId:` — not a new one, since it's the same account ID either way.
+CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
