@@ -4,7 +4,15 @@ import initSqlJs from 'sql.js'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { zstdCompressSync } from 'node:zlib'
-import { decodeMediaManifest, decodeTemplateConfig, decompressMediaFile, extractDeckMetadata, loadSqlJs, renderAnkiTemplate } from './ankiImport.js'
+import {
+  decodeMediaManifest,
+  decodeTemplateConfig,
+  decompressMediaFile,
+  extractDeckMetadata,
+  loadSqlJs,
+  renderAnkiTemplate,
+  renderCardChunk,
+} from './ankiImport.js'
 
 // Node-side sql.js init for building fixtures, independent of ankiImport.js's
 // own browser-facing loader — see that file's loadSqlJs()/loadWasmBinary()
@@ -179,9 +187,11 @@ describe('extractDeckMetadata', () => {
       mediaManifestBytes: utf8.encode(JSON.stringify({})),
     })
 
-    const { decks } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(decks).toEqual([
-      { ankiDeckId: 2, name: 'My Deck', cards: [{ ankiNoteId: 100, front: '私', back: '私<hr>I', mediaFilenames: [] }] },
+    const { decks, notetypeCache } = await extractDeckMetadata(buffer, await loadSqlJs())
+    expect(decks).toHaveLength(1)
+    expect(decks[0]).toMatchObject({ ankiDeckId: 2, name: 'My Deck' })
+    expect(renderCardChunk(decks[0].cardRows, notetypeCache)).toEqual([
+      { ankiNoteId: 100, front: '私', back: '私<hr>I', mediaFilenames: [] },
     ])
   })
 
@@ -203,9 +213,11 @@ describe('extractDeckMetadata', () => {
     zip.file('collection.anki2', stubCollectionBytes) // legacy stub present too — must be ignored
     const finalBuffer = await zip.generateAsync({ type: 'arraybuffer' })
 
-    const { decks } = await extractDeckMetadata(finalBuffer, await loadSqlJs())
-    expect(decks).toEqual([
-      { ankiDeckId: 2, name: 'Kaishi-like', cards: [{ ankiNoteId: 100, front: '私', back: '私<hr>I', mediaFilenames: [] }] },
+    const { decks, notetypeCache } = await extractDeckMetadata(finalBuffer, await loadSqlJs())
+    expect(decks).toHaveLength(1)
+    expect(decks[0]).toMatchObject({ ankiDeckId: 2, name: 'Kaishi-like' })
+    expect(renderCardChunk(decks[0].cardRows, notetypeCache)).toEqual([
+      { ankiNoteId: 100, front: '私', back: '私<hr>I', mediaFilenames: [] },
     ])
   })
 
@@ -242,11 +254,12 @@ describe('extractDeckMetadata', () => {
       mediaFiles: { 0: audioBytes, 1: new Uint8Array([9, 9]) },
     })
 
-    const { decks, zip, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(decks[0].cards[0].mediaFilenames).toEqual(['answer.mp3'])
+    const { decks, notetypeCache, rawBytes, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const [card] = renderCardChunk(decks[0].cardRows, notetypeCache)
+    expect(card.mediaFilenames).toEqual(['answer.mp3'])
     // decompressMediaFile is a separate, deliberately un-eager phase (see
     // module header comment) — not called during extractDeckMetadata itself.
-    expect(await decompressMediaFile(zip, entryNameByFilename, 'answer.mp3')).toEqual(audioBytes)
+    expect(await decompressMediaFile(rawBytes, entryNameByFilename, 'answer.mp3')).toEqual(audioBytes)
   })
 
   it('best-effort renders a cloze note by revealing the answer rather than skipping the card (FR-013)', async () => {
@@ -262,9 +275,10 @@ describe('extractDeckMetadata', () => {
     })
     const buffer = await buildApkgZip({ collectionEntryName: 'collection.anki2', collectionBytes })
 
-    const { decks } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(decks[0].cards[0].front).toBe('The capital is Paris.')
-    expect(decks[0].cards[0].back).toBe('The capital is Paris.<br>a hint')
+    const { decks, notetypeCache } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const [card] = renderCardChunk(decks[0].cardRows, notetypeCache)
+    expect(card.front).toBe('The capital is Paris.')
+    expect(card.back).toBe('The capital is Paris.<br>a hint')
   })
 
   it('rejects a file with no recognizable Anki collection database', async () => {
@@ -291,15 +305,15 @@ describe('decompressMediaFile', () => {
       mediaFiles: { 0: zstdCompressSync(realAudioBytes) },
     })
 
-    const { zip, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(await decompressMediaFile(zip, entryNameByFilename, 'answer.mp3')).toEqual(realAudioBytes)
+    const { rawBytes, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    expect(await decompressMediaFile(rawBytes, entryNameByFilename, 'answer.mp3')).toEqual(realAudioBytes)
   })
 
   it('returns null for a filename the archive does not actually contain', async () => {
     const collectionBytes = await buildCollectionDb({ decks: [], notetype: BASIC_NOTETYPE, notes: [] })
     const buffer = await buildApkgZip({ collectionEntryName: 'collection.anki2', collectionBytes })
 
-    const { zip, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(await decompressMediaFile(zip, entryNameByFilename, 'missing.mp3')).toBeNull()
+    const { rawBytes, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    expect(await decompressMediaFile(rawBytes, entryNameByFilename, 'missing.mp3')).toBeNull()
   })
 })

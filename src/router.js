@@ -83,7 +83,7 @@ export const routes = [
   // has no nav entry of its own (reached by clicking a deck in the manager),
   // same convention as the :scope sub-routes above. Lazy-loaded: the
   // zip/SQLite/zstd parsing stack (src/data/ankiImport.js) is only needed by
-  // visitors who actually use this pillar, and is heavy enough (jszip,
+  // visitors who actually use this pillar, and is heavy enough (fflate,
   // sql.js's wasm, fzstd) to keep out of everyone else's initial bundle.
   { path: '/decks', name: 'decks', component: () => import('./components/DeckManager.vue'), meta: { label: 'Decks' } },
   { path: '/decks/:deckId', name: 'deck-flashcards', component: () => import('./components/DeckFlashcards.vue') },

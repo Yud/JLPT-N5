@@ -68,8 +68,8 @@ describe('processMediaFromParsedDeck', () => {
     const first = await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3]) })
 
     // In the real system, the deck's cards are re-upserted with raw filename
-    // references before media processing re-runs (upsertDeckAndCards always
-    // writes the freshly-parsed HTML) — reproduce that here rather than
+    // references before media processing re-runs (upsertCardChunk always
+    // writes the freshly-rendered HTML) — reproduce that here rather than
     // leaving the previous pass's URL in place, which the instr()-based
     // lookup below would no longer find.
     await env.DB.prepare('UPDATE cards SET front = ? WHERE id = ?').bind('Front [sound:a.mp3]', 'imported-222-1').run()

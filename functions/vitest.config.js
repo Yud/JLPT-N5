@@ -25,12 +25,12 @@ export default defineConfig(async () => {
   const workflowWorkerConfigPath = path.join(workflowDir, 'wrangler.toml')
   const { workerOptions: rawWorkflowWorkerOptions } = unstable_getMiniflareWorkerOptions(workflowWorkerConfigPath)
   // modulesRules/modules/rootPath aren't reused below — this worker's real
-  // source (src/index.js) imports actual npm packages (jszip, fzstd, sql.js)
+  // source (src/index.js) imports actual npm packages (fflate, fzstd, sql.js)
   // and a static .wasm file, which only Wrangler's own bundler (esbuild)
   // resolves correctly; Miniflare's raw modules-list mode has no equivalent
   // for bare-specifier package resolution, so pointing it at the unbundled
   // source (as this worker's D1/R2/Workflow *bindings* still come from
-  // below) fails with "No such module 'jszip'" the moment ankiImport.js
+  // below) fails with "No such module 'fflate'" the moment ankiImport.js
   // is imported. `wrangler deploy --dry-run --outdir` runs the real build
   // pipeline instead — same as global-setup.js already does for the main
   // Pages Functions bundle (functions/dist-functions) — producing a single

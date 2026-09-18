@@ -24,21 +24,32 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { NonRetryableError } from 'cloudflare:workflows'
-import { extractDeckMetadata, decompressMediaFile } from '../../../src/data/ankiImport.js'
-import { upsertDeckAndCards } from '../../../src/server/deckImportProcessing.js'
+import { extractDeckMetadata, renderCardChunk, decompressMediaFiles } from '../../../src/data/ankiImport.js'
+import { upsertDeckRow, upsertCardChunk } from '../../../src/server/deckImportProcessing.js'
 import { processMediaFromParsedDeck } from '../../../src/server/mediaImportProcessing.js'
 import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 
 // This account is on Workers Free: 10ms CPU per step (fixed, cannot be
 // raised) and 1,024 steps per Workflow instance (fixed) — both bind at once
-// for a deck this size (4,354 media files). Progress updates are folded into
-// the same step as chunk processing rather than a separate step, to keep
-// step count down. CHUNK_SIZE=5 is a starting estimate from step-count math
-// (ceil(4354/5) = 871, comfortably under 1,024) — verify empirically against
-// a real large deck locally before relying on it; see the plan this shipped
-// from (git history) for the fallback if 5 files' worth of decompression
-// doesn't reliably fit in 10ms of actual CPU.
-const CHUNK_SIZE = 5
+// for a deck this size (4,354 media files, 1,501 cards). Progress updates are
+// folded into the same step as chunk processing rather than a separate step,
+// to keep step count down.
+//
+// Both constants below were sized against real timing from the actual deck
+// that broke production (Kaishi.1.5k.v2.4.3.apkg, repo root) — see the
+// profiling notes in the commit/PR this shipped from. fflate's per-call cost
+// for decompressing a media chunk is dominated by a near-fixed central-
+// directory scan (~3-9ms locally, largely independent of chunk size up to at
+// least 200 files), so MEDIA_CHUNK_SIZE is set high to keep step count well
+// under the 1,024 budget rather than tuned down for CPU headroom the way the
+// original (unverified) CHUNK_SIZE=5 guess was. RENDER_CHUNK_SIZE is sized
+// off measured template-rendering cost (~0.03ms/card locally). Re-verify
+// against Cloudflare Workers Observability after deploying, not just local
+// timing — local dev doesn't enforce real CPU-time accounting, which is why
+// the previous (pre-fflate) design passed local end-to-end testing but still
+// failed in production.
+const MEDIA_CHUNK_SIZE = 100
+const RENDER_CHUNK_SIZE = 150
 
 export class DeckImportWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
@@ -47,22 +58,31 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
     const mediaBucket = this.env.MEDIA
 
     try {
-      // Plain code, NOT step.do() — a parsed deck's card HTML (1,500+ cards)
-      // can exceed Workflows' 1 MiB per-step-result cap, and step results
-      // are memoized by name: on a resumed execution, an already-completed
-      // step's callback body does not re-run, it just returns the cached
-      // result. Parsing is pure, side-effect-free work over the immutable
-      // uploaded bytes, so it's safe (and per Cloudflare's own guidance,
-      // correct) to run outside a step — a restart just re-parses, which is
-      // cheap relative to the per-file work that follows.
+      // Plain code, NOT step.do() — a parsed deck's raw card rows (unrendered
+      // — see src/data/ankiImport.js's module header comment for why
+      // rendering is deferred to chunked steps below) stay well under
+      // Workflows' 1 MiB per-step-result cap regardless of deck size, and
+      // step results are memoized by name: on a resumed execution, an
+      // already-completed step's callback body does not re-run, it just
+      // returns the cached result. This phase is pure, side-effect-free work
+      // over the immutable uploaded bytes, so it's safe (and per Cloudflare's
+      // own guidance, correct) to run outside a step — a restart just
+      // re-parses. It's now cheap enough to actually be cheap: fflate never
+      // indexes more of the archive than the couple of entries (collection
+      // DB, media manifest) it's asked for here, unlike the JSZip-based
+      // version this replaced, which built a full ~4,358-entry index up
+      // front and was the dominant cost that made this phase fail outside a
+      // step for a deck this size.
       const object = await mediaBucket.get(r2Key)
       if (!object) throw new NonRetryableError(`Raw upload missing for job ${jobId}`)
-      const rawBytes = await object.arrayBuffer()
+      const arrayBuffer = await object.arrayBuffer()
       const SQL = await loadSqlJsForWorkflow()
-      // `zip`/`entryNameByFilename` are kept alive only in this run()'s
+      // `rawBytes`/`entryNameByFilename` are kept alive only in this run()'s
       // closure — never returned from a step — so the chunk steps below can
-      // decompress one media file at a time from the still-open archive.
-      const { decks, zip, entryNameByFilename } = await extractDeckMetadata(rawBytes, SQL)
+      // decompress specific media files on demand without re-fetching from
+      // R2. `notetypeCache` is likewise closure-only; renderCardChunk (pure)
+      // needs it but the SQLite connection it came from is already closed.
+      const { decks, rawBytes, entryNameByFilename, notetypeCache } = await extractDeckMetadata(arrayBuffer, SQL)
 
       await step.do('update-deck-total', async () => {
         await db
@@ -74,14 +94,29 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       let mediaDoneTotal = 0
       let mediaTotalSoFar = 0
       for (const deck of decks) {
-        // Upserts the deck + every card's text — no media bytes involved,
-        // so this stays well under the 1 MiB step-result cap regardless of
-        // deck size. Only returns `mediaNeeded`, an array of filenames.
-        const { deckId, mediaNeeded } = await step.do(`upsert-deck-${deck.ankiDeckId}`, async () =>
-          upsertDeckAndCards({ db, deck })
-        )
+        // Deck row only — card_count comes from the raw (unrendered) row
+        // count, known upfront, so this doesn't need to wait on rendering.
+        const { deckId } = await step.do(`upsert-deck-${deck.ankiDeckId}`, async () => upsertDeckRow({ db, deck }))
 
-        mediaTotalSoFar += mediaNeeded.length
+        // Renders + upserts this deck's cards a chunk at a time. Each chunk
+        // step RETURNS its own mediaNeeded (small, bounded by chunk size) —
+        // accumulated into the Set below OUTSIDE step.do(), the same reason
+        // mediaDoneTotal is incremented outside step.do() further down: a
+        // step that's already complete is skipped (not re-run) on a resumed
+        // execution, so anything that must survive a resume has to come from
+        // a step's return value, never a side effect written from inside its
+        // callback.
+        const mediaNeeded = new Set()
+        for (let i = 0; i < deck.cardRows.length; i += RENDER_CHUNK_SIZE) {
+          const cardRowsChunk = deck.cardRows.slice(i, i + RENDER_CHUNK_SIZE)
+          const { mediaNeeded: chunkMediaNeeded } = await step.do(`render-${deck.ankiDeckId}-${i}`, async () => {
+            const cards = renderCardChunk(cardRowsChunk, notetypeCache)
+            return upsertCardChunk({ db, deckId, cards })
+          })
+          for (const filename of chunkMediaNeeded) mediaNeeded.add(filename)
+        }
+
+        mediaTotalSoFar += mediaNeeded.size
         await step.do(`update-media-total-${deck.ankiDeckId}`, async () => {
           await db
             .prepare(`UPDATE deck_import_jobs SET media_total = ?, updated_at = ? WHERE id = ?`)
@@ -89,8 +124,9 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
             .run()
         })
 
-        for (let i = 0; i < mediaNeeded.length; i += CHUNK_SIZE) {
-          const chunk = mediaNeeded.slice(i, i + CHUNK_SIZE)
+        const mediaNeededList = [...mediaNeeded]
+        for (let i = 0; i < mediaNeededList.length; i += MEDIA_CHUNK_SIZE) {
+          const chunk = mediaNeededList.slice(i, i + MEDIA_CHUNK_SIZE)
           // Incremented OUTSIDE step.do — a plain, deterministic loop-counter
           // update that correctly recomputes on every replay. If this lived
           // inside the step.do callback instead, an already-completed step
@@ -99,11 +135,14 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
           // every chunk that finished before the restart.
           mediaDoneTotal += chunk.length
           await step.do(`media-${deck.ankiDeckId}-${i}`, async () => {
+            // Decompresses this whole chunk in one pass over the still-in-
+            // memory archive bytes — see decompressMediaFiles's doc comment
+            // for why that's cheaper than one call per file — then writes
+            // each file to R2 and discards the bytes, never accumulating
+            // more than one chunk's worth in memory at a time.
+            const decompressed = await decompressMediaFiles(rawBytes, entryNameByFilename, chunk)
             for (const filename of chunk) {
-              // Decompresses THIS ONE file from the still-open zip, writes
-              // it to R2, discards the bytes — never accumulates more than
-              // one chunk's worth in memory at a time.
-              const bytes = await decompressMediaFile(zip, entryNameByFilename, filename)
+              const bytes = decompressed.get(filename)
               await processMediaFromParsedDeck({ db, mediaBucket, deckId, filename, bytes })
             }
             await db

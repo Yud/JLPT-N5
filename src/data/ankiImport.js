@@ -12,22 +12,46 @@
 //     Zstandard-compressed, protobuf-encoded list of {name, size, sha1} (current
 //     Anki). Verified against a real ~100MB sample deck during planning.
 //
-// Split into two phases, not one combined parse, because eagerly decompressing
-// every referenced media file (a real deck's media can total ~100MB
-// decompressed) into one in-memory structure risks Workers' 128MB-per-isolate
-// memory cap — the same failure family (`exceededMemory`) as the CPU-limit bug
-// this redesign fixes. `extractDeckMetadata` only reads card text and *which*
-// filenames each card references; `decompressMediaFile` decompresses exactly
-// one file on demand, called by the Workflow immediately before that file's R2
-// write and discarded right after — never more than one chunk's worth in
-// memory at a time.
-import JSZip from 'jszip'
+// Zip reading uses fflate's unzipSync(), not JSZip: profiled against the real
+// 108MB / 4,354-media-file sample deck that broke production
+// (Kaishi.1.5k.v2.4.3.apkg, repo root), JSZip.loadAsync's full-archive index
+// build alone took ~440ms — by far the single biggest cost in the whole parse
+// phase, and enough on its own to blow the Workflow's CPU budget outside a
+// step (see workflows/anki-import/src/index.js's header comment). fflate's
+// unzipSync(bytes, { filter }) never builds an index of entries we don't ask
+// for — it scans the central directory and only decompresses entries the
+// filter callback accepts, which measured at single-digit milliseconds per
+// call regardless of how many of the archive's ~4,358 entries were requested.
+// Because of that, this module never indexes "all zip entries" up front at
+// all: `entryNameByFilename` (real filename -> zip's numbered entry name)
+// comes entirely from decoding the small `media` manifest file, and specific
+// entries (the collection DB, or a chunk of media files) are looked up by
+// name on demand via `extractZipEntries`.
+//
+// Split into a metadata phase and a render phase, not one combined parse,
+// for two independent reasons:
+//   1. Eagerly decompressing every referenced media file (a real deck's media
+//      can total ~100MB decompressed) into one in-memory structure risks
+//      Workers' 128MB-per-isolate memory cap — `decompressMediaFiles`
+//      decompresses only the caller's requested filenames, called by the
+//      Workflow immediately before each chunk's R2 writes and discarded right
+//      after — never more than one chunk's worth in memory at a time.
+//   2. Rendering ~1,500 cards' Anki templates is real CPU work (regex
+//      substitution per card, including a recursive pass for `{{#Field}}`
+//      conditionals) — profiling showed it's cheap per card (~0.03ms) but
+//      adds up past what a single Workflow step's CPU budget allows for a
+//      large deck, so it has to be chunkable across multiple step.do() calls
+//      the same way media processing already is. `extractDeckMetadata`
+//      returns raw, unrendered `cardRows` plus a `notetypeCache`; the
+//      Workflow calls the separate, pure `renderCardChunk` on slices of that.
+import { unzipSync } from 'fflate'
 import { decompress as zstdDecompress } from 'fzstd'
 import initSqlJs from 'sql.js'
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd]
 const FIELD_SEPARATOR = '\x1f'
 const DEFAULT_DECK_ID = 1 // Anki's built-in "Default" deck — imported only if it actually holds cards
+const COLLECTION_ENTRY_NAMES = ['collection.anki21b', 'collection.anki21', 'collection.anki2']
 
 // sql.js's WASM loading is environment-specific (Node for tests, a static
 // bundled import for the Workflow — see workflows/anki-import/src/loadSqlJs.js
@@ -58,6 +82,23 @@ function looksZstdCompressed(bytes) {
 
 async function maybeDecompress(bytes) {
   return looksZstdCompressed(bytes) ? zstdDecompress(bytes) : bytes
+}
+
+// --- Zip-layer reads (fflate) — see module header comment for why this is
+// never a full-archive index build, only ever a lookup of specific names. ---
+
+/** Decompresses just `names` from the zip (never the whole archive) — returns `{ [name]: Uint8Array }`, missing any name not actually present. */
+function extractZipEntries(rawBytes, names) {
+  const wanted = new Set(names)
+  return unzipSync(rawBytes, { filter: (file) => wanted.has(file.name) })
+}
+
+function pickCollectionBytes(rawBytes) {
+  const found = extractZipEntries(rawBytes, COLLECTION_ENTRY_NAMES)
+  for (const name of COLLECTION_ENTRY_NAMES) {
+    if (found[name]) return found[name]
+  }
+  throw new Error('Not a valid Anki export: no collection.anki2/anki21/anki21b found in the archive')
 }
 
 // --- Minimal protobuf reader (varint + length-delimited fields only) ---
@@ -193,13 +234,6 @@ function extractMediaFilenames(html) {
   return filenames
 }
 
-function pickCollectionEntryName(zip) {
-  for (const name of ['collection.anki21b', 'collection.anki21', 'collection.anki2']) {
-    if (zip.file(name)) return name
-  }
-  throw new Error('Not a valid Anki export: no collection.anki2/anki21/anki21b found in the archive')
-}
-
 // Anki's own client registers a custom "unicase" collation (used by the
 // `fields`/`templates`/`notetypes` tables' `name` columns and their unique
 // indexes) at the native SQLite C API level — sql.js's WASM build has no
@@ -249,62 +283,81 @@ function loadNoteType(db, notetypeId, cache) {
 }
 
 /**
- * Decompresses exactly one media file on demand from an already-open zip
- * (from `extractDeckMetadata`'s `zip`/`entryNameByFilename`) — returns
- * `Uint8Array | null` (null if the file isn't actually present in the
- * archive, e.g. referenced by a card but missing from the export). Called
- * once per file, immediately before that file is written to R2, then
- * discarded — never batched or accumulated, so peak memory only ever holds
- * one file's decompressed bytes at a time regardless of deck size.
+ * Decompresses one or more media files, given their real filenames, from the
+ * raw .apkg bytes — in a single pass over the archive regardless of how many
+ * filenames are requested (see module header comment: fflate's per-call cost
+ * is dominated by a fixed central-directory scan, not by how many entries
+ * match, so batching a whole chunk into one call is far cheaper than one call
+ * per file). Returns `Map<filename, Uint8Array | null>` — null for any
+ * filename the archive doesn't actually contain (e.g. referenced by a card
+ * but missing from the export).
+ *
+ * Modern Anki packages zstd-compress every individual media entry, not just
+ * the collection database (verified against a real ~100MB sample deck: all
+ * 4,354 media files were compressed) — without the `maybeDecompress` below,
+ * an extracted file would silently still be compressed bytes served under
+ * its real content type, which looks fine by size/hash but never actually
+ * renders or plays.
  */
-export async function decompressMediaFile(zip, entryNameByFilename, filename) {
-  const entryName = entryNameByFilename.get(filename)
-  const entry = entryName !== undefined ? zip.file(entryName) : null
-  if (!entry) return null
-  // Modern Anki packages zstd-compress every individual media entry, not
-  // just the collection database (verified against a real ~100MB sample
-  // deck: all 4,354 media files were compressed) — without this, the
-  // extracted file is silently still-compressed bytes served under its real
-  // content type, which looks fine by size/hash but never actually renders
-  // or plays.
-  return maybeDecompress(await entry.async('uint8array'))
+export async function decompressMediaFiles(rawBytes, entryNameByFilename, filenames) {
+  const entryNames = filenames.map((filename) => entryNameByFilename.get(filename)).filter((name) => name !== undefined)
+  const extracted = extractZipEntries(rawBytes, entryNames)
+
+  const result = new Map()
+  for (const filename of filenames) {
+    const entryName = entryNameByFilename.get(filename)
+    const zipLayerBytes = entryName !== undefined ? extracted[entryName] : undefined
+    result.set(filename, zipLayerBytes ? await maybeDecompress(zipLayerBytes) : null)
+  }
+  return result
+}
+
+/** Single-file convenience wrapper around `decompressMediaFiles` — see there for behavior. */
+export async function decompressMediaFile(rawBytes, entryNameByFilename, filename) {
+  const result = await decompressMediaFiles(rawBytes, entryNameByFilename, [filename])
+  return result.get(filename)
 }
 
 /**
- * Parses a `.apkg` file's bytes into deck/card metadata — WITHOUT
- * decompressing any media (see module header comment for why). `SQL` is an
- * already-initialized sql.js module (Node path: `loadSqlJs()` above; Workflow
- * path: workflows/anki-import/src/loadSqlJs.js's static-wasm-import version).
+ * Parses a `.apkg` file's bytes into deck metadata and RAW (unrendered) card
+ * rows — WITHOUT decompressing any media, and WITHOUT rendering card
+ * templates (see module header comment for why both are deferred). `SQL` is
+ * an already-initialized sql.js module (Node path: `loadSqlJs()` above;
+ * Workflow path: workflows/anki-import/src/loadSqlJs.js's static-wasm-import
+ * version).
  *
- * Returns `{ decks, zip, entryNameByFilename }`:
- *   decks: [{ ankiDeckId, name, cards: [{ ankiNoteId, front, back, mediaFilenames: string[] }] }]
- *   zip, entryNameByFilename: kept alive for later `decompressMediaFile` calls
- *     against the same archive — callers must not let `parseAnkiPackage`'s
- *     caller discard these before every referenced file has been processed.
+ * Returns `{ decks, rawBytes, entryNameByFilename, notetypeCache }`:
+ *   decks: [{ ankiDeckId, name, cardRows: [{ cardId, cardOrd, noteId, notetypeId, flds }] }]
+ *   rawBytes: the whole archive's bytes, kept for later `decompressMediaFiles`
+ *     calls looking up specific entries by name — callers must not discard
+ *     this before every referenced media file has been processed.
+ *   notetypeCache: every notetype (fields + templates) referenced by any
+ *     returned card, pre-loaded while the SQLite connection was still open —
+ *     callers pass this straight to `renderCardChunk`, which needs it to
+ *     render but never touches SQLite itself.
  */
 export async function extractDeckMetadata(arrayBuffer, SQL) {
-  const zip = await JSZip.loadAsync(arrayBuffer)
+  const rawBytes = new Uint8Array(arrayBuffer)
 
-  const collectionEntryName = pickCollectionEntryName(zip)
-  const rawCollectionBytes = await zip.file(collectionEntryName).async('uint8array')
+  const rawCollectionBytes = pickCollectionBytes(rawBytes)
   const sqliteBytes = await maybeDecompress(rawCollectionBytes)
 
-  const mediaManifestFile = zip.file('media')
-  const manifest = mediaManifestFile ? decodeMediaManifest(await mediaManifestFile.async('uint8array')) : {}
+  const mediaManifestBytes = extractZipEntries(rawBytes, ['media'])['media']
+  const manifest = mediaManifestBytes ? decodeMediaManifest(mediaManifestBytes) : {}
   const entryNameByFilename = new Map(Object.entries(manifest).map(([entry, filename]) => [filename, entry]))
 
   const db = new SQL.Database(stripUnsupportedCollations(SQL, sqliteBytes))
-  let decks
+  let decks, notetypeCache
   try {
-    decks = extractDecks(db)
+    ;({ decks, notetypeCache } = extractDeckCardRows(db))
   } finally {
-    db.close() // no more D1/SQLite queries needed once card text is extracted — media decompression below only needs `zip`/`entryNameByFilename`
+    db.close() // no more D1/SQLite queries needed once card rows + the notetype cache are extracted — rendering below is pure, and media decompression only needs `rawBytes`/`entryNameByFilename`
   }
 
-  return { decks, zip, entryNameByFilename }
+  return { decks, rawBytes, entryNameByFilename, notetypeCache }
 }
 
-function extractDecks(db) {
+function extractDeckCardRows(db) {
   const deckRows = queryAll(
     db,
     `SELECT DISTINCT d.id, d.name FROM decks d JOIN cards c ON c.did = d.id WHERE d.id != ?`,
@@ -328,23 +381,39 @@ function extractDecks(db) {
        WHERE c.did = ?`,
       [deckRow.id]
     )
+    // Pre-loads (and memoizes) every notetype these rows reference while `db`
+    // is still open — renderCardChunk needs fieldNames/templates but never
+    // touches SQLite, since by the time it runs the connection is closed.
+    for (const row of cardRows) loadNoteType(db, row.notetypeId, notetypeCache)
 
-    const cards = []
-    for (const row of cardRows) {
-      const notetype = loadNoteType(db, row.notetypeId, notetypeCache)
-      const values = row.flds.split(FIELD_SEPARATOR)
-      const fields = new Map(notetype.fieldNames.map((name, i) => [name, values[i] ?? '']))
-      const template = notetype.templates.find((t) => t.ord === row.cardOrd) ?? notetype.templates[0]
-      if (!template) continue // note type with no templates at all — nothing to render
-
-      const { front, back } = renderCard(template.qfmt, template.afmt, fields)
-      const mediaFilenames = [...new Set([...extractMediaFilenames(front), ...extractMediaFilenames(back)])]
-
-      cards.push({ ankiNoteId: row.noteId, front, back, mediaFilenames })
-    }
-
-    if (cards.length > 0) decks.push({ ankiDeckId: deckRow.id, name: deckRow.name, cards })
+    if (cardRows.length > 0) decks.push({ ankiDeckId: deckRow.id, name: deckRow.name, cardRows })
   }
 
-  return decks
+  return { decks, notetypeCache }
+}
+
+/**
+ * Renders a slice of raw card rows (from `extractDeckMetadata`'s
+ * `decks[].cardRows`) into `{ ankiNoteId, front, back, mediaFilenames }[]` —
+ * pure and side-effect-free, given the `notetypeCache` `extractDeckMetadata`
+ * already built. This is the piece the Workflow chunks across multiple
+ * step.do() calls (see workflows/anki-import/src/index.js) — profiling
+ * showed it's cheap per card, but rendering all of a large deck's ~1,500
+ * cards in one shot still adds up past a single step's CPU budget.
+ */
+export function renderCardChunk(cardRows, notetypeCache) {
+  const rendered = []
+  for (const row of cardRows) {
+    const notetype = notetypeCache.get(row.notetypeId)
+    const values = row.flds.split(FIELD_SEPARATOR)
+    const fields = new Map(notetype.fieldNames.map((name, i) => [name, values[i] ?? '']))
+    const template = notetype.templates.find((t) => t.ord === row.cardOrd) ?? notetype.templates[0]
+    if (!template) continue // note type with no templates at all — nothing to render
+
+    const { front, back } = renderCard(template.qfmt, template.afmt, fields)
+    const mediaFilenames = [...new Set([...extractMediaFilenames(front), ...extractMediaFilenames(back)])]
+
+    rendered.push({ ankiNoteId: row.noteId, front, back, mediaFilenames })
+  }
+  return rendered
 }
