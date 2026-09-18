@@ -93,17 +93,31 @@ const RENDER_CHUNK_SIZE = 150
 
 /**
  * Fetches the raw upload from R2 and extracts deck metadata from it — kept
- * as its own function, not inlined into run(), specifically so its local
- * `arrayBuffer` (the whole archive) is scoped to THIS function's call frame.
- * Once this returns, that frame — and the 100MB+ it was holding — becomes
- * eligible for GC, instead of staying retained as part of run()'s own
- * suspended state for the rest of a long, many-step execution (see the
- * memory-limit comment above `MEDIA_CHUNK_SIZE`).
+ * as its own function, not inlined into run(), specifically so its locals
+ * (`arrayBuffer`, the whole archive, AND `SQL`, the loaded sql.js WASM
+ * module) are scoped to THIS function's call frame. Once this returns, that
+ * frame becomes eligible for GC, instead of staying retained as part of
+ * run()'s own suspended state for the rest of a long, many-step execution
+ * (see the memory-limit comment above `MEDIA_CHUNK_SIZE`).
+ *
+ * `SQL` is loaded HERE, not passed in from run(), for exactly that reason —
+ * an earlier version of this fix moved `arrayBuffer` out of run()'s scope
+ * but still declared `const SQL = await loadSqlJsForWorkflow()` directly in
+ * run(), which crashed again in production for the same underlying reason.
+ * WASM linear memory can grow but never shrinks for the life of the module
+ * instance that owns it, and opening + patching a real SQLite database (see
+ * stripUnsupportedCollations in src/data/ankiImport.js — it opens the
+ * database TWICE) grows it well past what an empty module starts at. As
+ * long as run() itself never binds a variable to that module, none of that
+ * memory is reachable from run()'s continuation once this function returns,
+ * and it's released — same principle as `arrayBuffer`, just one variable we
+ * missed the first time.
  */
-async function fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId, SQL }) {
+async function fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId }) {
   const object = await mediaBucket.get(r2Key)
   if (!object) throw new NonRetryableError(`Raw upload missing for job ${jobId}`)
   const arrayBuffer = await object.arrayBuffer()
+  const SQL = await loadSqlJsForWorkflow()
   return extractDeckMetadata(arrayBuffer, SQL)
 }
 
@@ -129,9 +143,10 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       // version this replaced, which built a full ~4,358-entry index up
       // front and was the dominant cost that made this phase fail outside a
       // step for a deck this size. See fetchAndExtractDeckMetadata's own doc
-      // comment for why it's a separate function rather than inlined here.
-      const SQL = await loadSqlJsForWorkflow()
-      const { decks, entryNameByFilename, notetypeCache } = await fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId, SQL })
+      // comment for why it's a separate function rather than inlined here —
+      // notably, `SQL` (the sql.js WASM module) is loaded INSIDE that
+      // function now, not passed in from here, so run() never binds it.
+      const { decks, entryNameByFilename, notetypeCache } = await fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId })
 
       await step.do('update-deck-total', async () => {
         await db
