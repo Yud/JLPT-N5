@@ -1,8 +1,16 @@
 <template>
   <div>
-    <RouterLink :to="{ name: 'decks' }" class="mb-3 inline-block text-sm text-muted hover:text-text hover:underline">
-      ← Back to decks
-    </RouterLink>
+    <!-- Mobile: the counter rides the same row as the back link (absolutely centered so its own
+         width doesn't push the link over) instead of eating its own full-width row below — see
+         the "Card X / Y" line further down, hidden on mobile in favor of this one. -->
+    <div class="relative mb-3 flex items-center sm:mb-0 sm:block">
+      <RouterLink :to="{ name: 'decks' }" class="inline-block text-sm text-muted hover:text-text hover:underline sm:mb-3">
+        ← Back to decks
+      </RouterLink>
+      <p v-if="session" class="absolute inset-x-0 text-center text-sm sm:hidden">
+        {{ session.progress.value.index }} / {{ session.progress.value.total }}
+      </p>
+    </div>
 
     <div v-if="notFound">
       <p>This deck couldn't be found — it may have been deleted.</p>
@@ -13,9 +21,14 @@
     </div>
 
     <div v-else>
-      <p>Card {{ session.progress.value.index }} / {{ session.progress.value.total }}</p>
+      <p class="hidden sm:block">Card {{ session.progress.value.index }} / {{ session.progress.value.total }}</p>
 
       <div v-if="!session.complete.value">
+        <!-- Duplicated below the card for larger screens, where there's room to scroll-free grade without it.
+             Mobile-only here: on a phone, a revealed card (front + back + media) often runs past the fold, so
+             a grader relying only on the below copy has to scroll down every single card. -->
+        <GradeButtons v-if="session.revealed.value" class="sm:hidden" @grade="session.grade($event)" />
+
         <button
           type="button"
           class="my-6 flex min-h-48 w-full cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border border-border bg-surface p-4 text-center shadow-sm transition-colors hover:bg-surface-hover disabled:cursor-default disabled:hover:bg-surface"
@@ -31,20 +44,7 @@
           </template>
         </button>
 
-        <div v-if="session.revealed.value" class="flex flex-wrap justify-center gap-2">
-          <AppButton variant="danger" aria-label="Again" @click="session.grade('again')"
-            ><span class="text-xl">😤</span> <span class="hidden sm:inline">Again</span></AppButton
-          >
-          <AppButton variant="warning" aria-label="Hard" @click="session.grade('hard')"
-            ><span class="text-xl">🙄</span> <span class="hidden sm:inline">Hard</span></AppButton
-          >
-          <AppButton variant="success" aria-label="Good" @click="session.grade('good')"
-            ><span class="text-xl">😏</span> <span class="hidden sm:inline">Good</span></AppButton
-          >
-          <AppButton variant="info" aria-label="Easy" @click="session.grade('easy')"
-            ><span class="text-xl">😎</span> <span class="hidden sm:inline">Easy</span></AppButton
-          >
-        </div>
+        <GradeButtons v-if="session.revealed.value" @grade="session.grade($event)" />
       </div>
 
       <div v-else class="flex flex-wrap gap-2">
@@ -60,6 +60,7 @@ import { computed, shallowRef, ref, onActivated } from 'vue'
 import { useRoute, onBeforeRouteUpdate } from 'vue-router'
 import { useCardSession } from '../composables/useCardSession.js'
 import AppButton from './AppButton.vue'
+import GradeButtons from './GradeButtons.vue'
 
 const route = useRoute()
 const notFound = ref(false)
