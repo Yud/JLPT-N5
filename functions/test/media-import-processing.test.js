@@ -1,11 +1,11 @@
-// Unit tests for the per-file logic the DeckImportWorkflow (workflows/anki-import)
-// runs per chunk — extracted into src/server/mediaImportProcessing.js
+// Unit tests for the per-chunk logic the DeckImportWorkflow (workflows/anki-import)
+// runs per media chunk step — extracted into src/server/mediaImportProcessing.js
 // specifically so it's testable here, directly, without needing a live
 // Workflow runtime (mirrors how src/scheduling/scheduler.js is tested apart
 // from its endpoint).
 import { env } from 'cloudflare:workers'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { processMediaFromParsedDeck } from '../../src/server/mediaImportProcessing.js'
+import { processMediaChunk } from '../../src/server/mediaImportProcessing.js'
 
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM decks')
@@ -24,16 +24,23 @@ beforeEach(async () => {
     .run()
 })
 
-describe('processMediaFromParsedDeck', () => {
-  it('no-ops (does not write anything) when bytes is null — a card referenced a filename missing from the archive', async () => {
-    const result = await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'nope.mp3', bytes: null })
-    expect(result).toEqual({ filename: 'nope.mp3', skipped: true })
+describe('processMediaChunk', () => {
+  it('no-ops (does not write anything) for a file whose bytes is null — a card referenced a filename missing from the archive', async () => {
+    const results = await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files: [{ filename: 'nope.mp3', bytes: null }] })
+    expect(results).toEqual([{ filename: 'nope.mp3', skipped: true }])
     expect(await env.DB.prepare('SELECT * FROM media_assets WHERE deck_id = ?').bind('222').first()).toBeNull()
   })
 
-  it('writes the asset to its permanent key, upserts a media_assets row, and rewrites referencing cards', async () => {
-    await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3]) })
-    await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'b.jpg', bytes: new Uint8Array([4, 5]) })
+  it('writes each asset to its permanent key, upserts a media_assets row, and rewrites referencing cards, in one chunk', async () => {
+    await processMediaChunk({
+      db: env.DB,
+      mediaBucket: env.MEDIA,
+      deckId: '222',
+      files: [
+        { filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3]) },
+        { filename: 'b.jpg', bytes: new Uint8Array([4, 5]) },
+      ],
+    })
 
     const { results: assets } = await env.DB.prepare('SELECT * FROM media_assets WHERE deck_id = ?').bind('222').all()
     expect(assets).toHaveLength(2)
@@ -44,6 +51,10 @@ describe('processMediaFromParsedDeck', () => {
     const storedObject = await env.MEDIA.get(audioAsset.id)
     expect(new Uint8Array(await storedObject.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
 
+    // Both files reference the SAME card — proves the chunk's writes are
+    // correctly layered (one file's rewrite doesn't clobber the other's),
+    // the reason processMediaChunk batches via db.batch() instead of one
+    // independent UPDATE per file.
     const card = await env.DB.prepare('SELECT * FROM cards WHERE id = ?').bind('imported-222-1').first()
     expect(card.front).toBe(`Front [sound:/api/media/${audioAsset.id}]`)
     const imageAsset = assets.find((a) => a.filename === 'b.jpg')
@@ -51,12 +62,12 @@ describe('processMediaFromParsedDeck', () => {
   })
 
   it('reuses the same media asset id when reprocessing the same unchanged content for a deck', async () => {
-    await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3]) })
+    await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files: [{ filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3]) }] })
     const first = await env.DB.prepare('SELECT id FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()
 
     // Same byte length as before — same logical content, just re-run (e.g. a
     // Workflow step retry re-decompressing the same file).
-    await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3', bytes: new Uint8Array([9, 9, 9]) })
+    await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files: [{ filename: 'a.mp3', bytes: new Uint8Array([9, 9, 9]) }] })
     const second = await env.DB.prepare('SELECT id, size_bytes FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()
 
     expect(second.id).toBe(first.id)
@@ -65,7 +76,7 @@ describe('processMediaFromParsedDeck', () => {
   it('assigns a new media asset id when the content actually changes, and cleans up the superseded object', async () => {
     // A same-URL content swap would otherwise be invisible to any client
     // that already cached GET /api/media/:id's "immutable" response.
-    const first = await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3]) })
+    const [first] = await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files: [{ filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3]) }] })
 
     // In the real system, the deck's cards are re-upserted with raw filename
     // references before media processing re-runs (upsertCardChunk always
@@ -74,7 +85,7 @@ describe('processMediaFromParsedDeck', () => {
     // lookup below would no longer find.
     await env.DB.prepare('UPDATE cards SET front = ? WHERE id = ?').bind('Front [sound:a.mp3]', 'imported-222-1').run()
 
-    const second = await processMediaFromParsedDeck({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3, 4, 5]) })
+    const [second] = await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files: [{ filename: 'a.mp3', bytes: new Uint8Array([1, 2, 3, 4, 5]) }] })
 
     expect(second.mediaAssetId).not.toBe(first.mediaAssetId)
     const row = await env.DB.prepare('SELECT id, size_bytes FROM media_assets WHERE deck_id = ? AND filename = ?').bind('222', 'a.mp3').first()

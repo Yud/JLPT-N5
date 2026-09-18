@@ -26,7 +26,7 @@ import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { NonRetryableError } from 'cloudflare:workflows'
 import { extractDeckMetadata, renderCardChunk, decompressMediaFiles } from '../../../src/data/ankiImport.js'
 import { upsertDeckRow, upsertCardChunk } from '../../../src/server/deckImportProcessing.js'
-import { processMediaFromParsedDeck } from '../../../src/server/mediaImportProcessing.js'
+import { processMediaChunk } from '../../../src/server/mediaImportProcessing.js'
 import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 
 // This account is on Workers Free: 10ms CPU per step (fixed, cannot be
@@ -43,11 +43,25 @@ import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 // least 200 files), so MEDIA_CHUNK_SIZE is set high to keep step count well
 // under the 1,024 budget rather than tuned down for CPU headroom the way the
 // original (unverified) CHUNK_SIZE=5 guess was. RENDER_CHUNK_SIZE is sized
-// off measured template-rendering cost (~0.03ms/card locally). Re-verify
-// against Cloudflare Workers Observability after deploying, not just local
-// timing — local dev doesn't enforce real CPU-time accounting, which is why
-// the previous (pre-fflate) design passed local end-to-end testing but still
-// failed in production.
+// off measured template-rendering cost (~0.03ms/card locally).
+//
+// MEDIA_CHUNK_SIZE isn't bound by CPU alone, though: D1 separately caps a
+// Worker invocation (each step is one) at 50 queries on Workers Free
+// ("Queries per Worker invocation (read subrequest limits): 1000 (Paid) / 50
+// (Free)", per D1's own limits page) — hit as "Too many API requests by
+// single Worker invocation" when processMediaChunk still wrote one file at a
+// time. mediaImportProcessing.js now batches a whole chunk's D1 writes into
+// one db.batch() call (2 round-trips total per step, regardless of chunk
+// size), so MEDIA_CHUNK_SIZE is no longer constrained by D1's query count —
+// only by CPU time and the 1 MiB step-result cap. RENDER_CHUNK_SIZE was
+// never at risk the same way: upsertCardChunk already batched its writes
+// from the start.
+//
+// Re-verify against Cloudflare Workers Observability after deploying, not
+// just local timing — local dev doesn't enforce real CPU-time accounting or
+// D1's subrequest cap the same way, which is why both the original
+// (pre-fflate) design and, separately, the un-batched media writes passed
+// local end-to-end testing but still failed in production.
 const MEDIA_CHUNK_SIZE = 100
 const RENDER_CHUNK_SIZE = 150
 
@@ -138,13 +152,15 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
             // Decompresses this whole chunk in one pass over the still-in-
             // memory archive bytes — see decompressMediaFiles's doc comment
             // for why that's cheaper than one call per file — then writes
-            // each file to R2 and discards the bytes, never accumulating
-            // more than one chunk's worth in memory at a time.
+            // each file to R2 and its D1 rows in one batch (processMediaChunk
+            // — see its module header comment for why that's not done
+            // per-file: D1 caps a step at 50 queries/invocation on Free, and
+            // this chunk size assumes batching, not one-by-one writes),
+            // never accumulating more than one chunk's worth of bytes in
+            // memory at a time.
             const decompressed = await decompressMediaFiles(rawBytes, entryNameByFilename, chunk)
-            for (const filename of chunk) {
-              const bytes = decompressed.get(filename)
-              await processMediaFromParsedDeck({ db, mediaBucket, deckId, filename, bytes })
-            }
+            const files = chunk.map((filename) => ({ filename, bytes: decompressed.get(filename) }))
+            await processMediaChunk({ db, mediaBucket, deckId, files })
             await db
               .prepare(`UPDATE deck_import_jobs SET media_done = ?, updated_at = ? WHERE id = ?`)
               .bind(mediaDoneTotal, Date.now(), jobId)

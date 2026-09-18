@@ -3,7 +3,7 @@
 // the old functions/api/decks/import.js so it's callable from a Workflow step
 // instead of only an HTTP handler. Front/back text is inserted with its raw
 // Anki media references (`[sound:...]`, `src="..."`) still unrewritten —
-// that rewrite happens per-file, later, in processMediaFromParsedDeck
+// that rewrite happens later, per media chunk, in processMediaChunk
 // (mediaImportProcessing.js), once each referenced file's permanent
 // media_assets id is known.
 //
