@@ -11,11 +11,6 @@ export function mediaTaskId(jobId, deckAnkiId, chunkIndex) {
   return `${jobId}-media-${deckAnkiId}-${chunkIndex}`
 }
 
-/** R2 key for one chunk's staged raw-media blob (see extractRawMediaFiles/packMediaChunk, src/data/ankiImport.js) — grouped under a job-scoped prefix so finalization can clean them all up with one list+delete. */
-export function stagedMediaChunkKey(jobId, deckAnkiId, chunkIndex) {
-  return `raw-imports/${jobId}/media-chunk-${deckAnkiId}-${chunkIndex}.bin`
-}
-
 /** Inserts one 'pending' row per task, in a single D1 batch (one round-trip regardless of count). */
 export async function createMediaTasks({ db, jobId, taskIds }) {
   const now = Date.now()
@@ -82,11 +77,5 @@ export async function completeMediaTask({ db, mediaBucket, jobId, r2Key, taskId,
     .run()
   if (result.meta.changes > 0) {
     await mediaBucket.delete(r2Key).catch(() => {})
-    // Every chunk's staged blob (stagedMediaChunkKey) lives under this same
-    // job-scoped prefix — list+delete rather than tracking individual keys,
-    // since this runs exactly once (guarded by the UPDATE above) regardless
-    // of how many chunks the job had.
-    const { objects } = await mediaBucket.list({ prefix: `raw-imports/${jobId}/` })
-    await Promise.all(objects.map((object) => mediaBucket.delete(object.key).catch(() => {})))
   }
 }

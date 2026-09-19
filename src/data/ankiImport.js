@@ -12,30 +12,26 @@
 //     Zstandard-compressed, protobuf-encoded list of {name, size, sha1} (current
 //     Anki). Verified against a real ~100MB sample deck during planning.
 //
-// Zip reading uses fflate's unzipSync(), not JSZip: profiled against the real
-// 108MB / 4,354-media-file sample deck that broke production
-// (Kaishi.1.5k.v2.4.3.apkg, repo root), JSZip.loadAsync's full-archive index
-// build alone took ~440ms — by far the single biggest cost in the whole parse
-// phase, and enough on its own to blow the Workflow's CPU budget outside a
-// step (see workflows/anki-import/src/index.js's header comment). fflate's
-// unzipSync(bytes, { filter }) never builds an index of entries we don't ask
-// for — it scans the central directory and only decompresses entries the
-// filter callback accepts, which measured at single-digit milliseconds per
-// call regardless of how many of the archive's ~4,358 entries were requested.
-// Because of that, this module never indexes "all zip entries" up front at
-// all: `entryNameByFilename` (real filename -> zip's numbered entry name)
-// comes entirely from decoding the small `media` manifest file, and specific
-// entries (the collection DB, or a chunk of media files) are looked up by
-// name on demand via `extractZipEntries`.
+// Zip reading goes through zipRangeReader.js's hand-rolled, range-read-only
+// parser (given a `Reader`, never the archive's own bytes) — see
+// ANKI-IMPORT-RANGE-READ-PLAN.md (repo root) for the full history: every
+// earlier design (JSZip, then fflate, both requiring a full in-memory
+// buffer) eventually had to fetch the whole ~108MB archive into memory
+// *somewhere*, and that kept resurfacing as a production CPU-time or
+// isolate-memory failure no matter how carefully the surrounding code
+// chunked its own work. Nothing in this module ever holds more than the
+// central directory (~217KB for a 4,358-entry deck) or one requested entry's
+// own compressed bytes at a time.
 //
 // Split into a metadata phase and a render phase, not one combined parse,
 // for two independent reasons:
 //   1. Eagerly decompressing every referenced media file (a real deck's media
 //      can total ~100MB decompressed) into one in-memory structure risks
-//      Workers' 128MB-per-isolate memory cap — `decompressMediaFiles`
-//      decompresses only the caller's requested filenames, called by the
-//      Workflow immediately before each chunk's R2 writes and discarded right
-//      after — never more than one chunk's worth in memory at a time.
+//      Workers' 128MB-per-isolate memory cap — `decompressMediaFile(s)`
+//      range-reads and decompresses only the caller's requested filenames,
+//      called by the Workflow immediately before each chunk's R2 writes and
+//      discarded right after — never more than one chunk's worth in memory
+//      at a time.
 //   2. Rendering ~1,500 cards' Anki templates is real CPU work (regex
 //      substitution per card, including a recursive pass for `{{#Field}}`
 //      conditionals) — profiling showed it's cheap per card (~0.03ms) but
@@ -44,9 +40,9 @@
 //      the same way media processing already is. `extractDeckMetadata`
 //      returns raw, unrendered `cardRows` plus a `notetypeCache`; the
 //      Workflow calls the separate, pure `renderCardChunk` on slices of that.
-import { unzipSync } from 'fflate'
 import { decompress as zstdDecompress } from 'fzstd'
 import initSqlJs from 'sql.js'
+import { readCentralDirectory, readZipEntryData } from './zipRangeReader.js'
 
 const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd]
 const FIELD_SEPARATOR = '\x1f'
@@ -82,23 +78,6 @@ function looksZstdCompressed(bytes) {
 
 async function maybeDecompress(bytes) {
   return looksZstdCompressed(bytes) ? zstdDecompress(bytes) : bytes
-}
-
-// --- Zip-layer reads (fflate) — see module header comment for why this is
-// never a full-archive index build, only ever a lookup of specific names. ---
-
-/** Decompresses just `names` from the zip (never the whole archive) — returns `{ [name]: Uint8Array }`, missing any name not actually present. */
-function extractZipEntries(rawBytes, names) {
-  const wanted = new Set(names)
-  return unzipSync(rawBytes, { filter: (file) => wanted.has(file.name) })
-}
-
-function pickCollectionBytes(rawBytes) {
-  const found = extractZipEntries(rawBytes, COLLECTION_ENTRY_NAMES)
-  for (const name of COLLECTION_ENTRY_NAMES) {
-    if (found[name]) return found[name]
-  }
-  throw new Error('Not a valid Anki export: no collection.anki2/anki21/anki21b found in the archive')
 }
 
 // --- Minimal protobuf reader (varint + length-delimited fields only) ---
@@ -283,14 +262,14 @@ function loadNoteType(db, notetypeId, cache) {
 }
 
 /**
- * Decompresses one or more media files, given their real filenames, from the
- * raw .apkg bytes — in a single pass over the archive regardless of how many
- * filenames are requested (see module header comment: fflate's per-call cost
- * is dominated by a fixed central-directory scan, not by how many entries
- * match, so batching a whole chunk into one call is far cheaper than one call
- * per file). Returns `Map<filename, Uint8Array | null>` — null for any
- * filename the archive doesn't actually contain (e.g. referenced by a card
- * but missing from the export).
+ * Range-reads and fully decompresses (zip layer, then zstd layer if
+ * present) one media file, given `mediaEntryByFilename` (from
+ * `extractDeckMetadata` — real filename -> that entry's zip metadata).
+ * Returns `null` for a filename not actually in the archive (e.g.
+ * referenced by a card but missing from the export). Never reads or holds
+ * anything beyond this one entry's own compressed bytes — no archive-wide
+ * buffer, unlike the fflate-based version this replaced (see module header
+ * comment).
  *
  * Modern Anki packages zstd-compress every individual media entry, not just
  * the collection database (verified against a real ~100MB sample deck: all
@@ -299,159 +278,71 @@ function loadNoteType(db, notetypeId, cache) {
  * its real content type, which looks fine by size/hash but never actually
  * renders or plays.
  */
-export async function decompressMediaFiles(rawBytes, entryNameByFilename, filenames) {
-  const entryNames = filenames.map((filename) => entryNameByFilename.get(filename)).filter((name) => name !== undefined)
-  const extracted = extractZipEntries(rawBytes, entryNames)
-
-  const result = new Map()
-  for (const filename of filenames) {
-    const entryName = entryNameByFilename.get(filename)
-    const zipLayerBytes = entryName !== undefined ? extracted[entryName] : undefined
-    result.set(filename, zipLayerBytes ? await maybeDecompress(zipLayerBytes) : null)
-  }
-  return result
-}
-
-/** Single-file convenience wrapper around `decompressMediaFiles` — see there for behavior. */
-export async function decompressMediaFile(rawBytes, entryNameByFilename, filename) {
-  const result = await decompressMediaFiles(rawBytes, entryNameByFilename, [filename])
-  return result.get(filename)
-}
-
-/**
- * Extracts just the zip-layer bytes (still individually zstd-compressed for
- * modern Anki media, NOT decompressed further — unlike `decompressMediaFiles`,
- * which does both layers) for a batch of filenames. Used by
- * DeckImportWorkflow's staging step (workflows/anki-import/src/index.js) to
- * pull a chunk's raw content out of the archive once, pack it, and hand it to
- * a MediaChunkWorkflow instance that never needs to touch the archive itself
- * — see that file's header comment for why fetching the whole archive per
- * gather instance was the actual cause of production's isolate-memory
- * failures. Returns `Map<filename, Uint8Array>` — filenames not actually
- * present in the archive are omitted entirely (not included as null); a
- * filename simply missing from the map — and later from `unpackMediaChunk`'s
- * result — is the same "not found" signal `processMediaChunk` already treats
- * as a skip.
- */
-export function extractRawMediaFiles(rawBytes, entryNameByFilename, filenames) {
-  const entryNames = filenames.map((filename) => entryNameByFilename.get(filename)).filter((name) => name !== undefined)
-  const extracted = extractZipEntries(rawBytes, entryNames)
-
-  const result = new Map()
-  for (const filename of filenames) {
-    const entryName = entryNameByFilename.get(filename)
-    const zipLayerBytes = entryName !== undefined ? extracted[entryName] : undefined
-    if (zipLayerBytes) result.set(filename, zipLayerBytes)
-  }
-  return result
-}
-
-/** zstd-decompresses one already zip-extracted media file's bytes, if it's zstd-compressed — see `decompressMediaFiles`'s doc comment for why modern Anki media needs this second layer. */
-export async function decompressMediaBytes(zipLayerBytes) {
+export async function decompressMediaFile(reader, mediaEntryByFilename, filename) {
+  const entry = mediaEntryByFilename.get(filename)
+  if (!entry) return null
+  const zipLayerBytes = await readZipEntryData(reader, entry)
   return maybeDecompress(zipLayerBytes)
 }
 
-const UINT32_BYTES = 4
-
-/**
- * Packs a chunk's raw (zip-layer-extracted, from `extractRawMediaFiles`)
- * media files into one binary blob for staging to R2 — see
- * workflows/anki-import/src/index.js's staging step. Format: repeated
- * `[4-byte filename byte-length][filename utf8][4-byte content byte-length]
- * [content]`, concatenated. Deliberately minimal, not a "real" archive
- * format — `packMediaChunk`/`unpackMediaChunk` are the only two things that
- * ever need to agree on it.
- */
-export function packMediaChunk(filesByName) {
-  const encoder = new TextEncoder()
-  const entries = [...filesByName].map(([filename, bytes]) => ({ nameBytes: encoder.encode(filename), bytes }))
-  const totalLength = entries.reduce((sum, { nameBytes, bytes }) => sum + UINT32_BYTES * 2 + nameBytes.length + bytes.length, 0)
-
-  const packed = new Uint8Array(totalLength)
-  const view = new DataView(packed.buffer)
-  let offset = 0
-  for (const { nameBytes, bytes } of entries) {
-    view.setUint32(offset, nameBytes.length, true)
-    offset += UINT32_BYTES
-    view.setUint32(offset, bytes.length, true)
-    offset += UINT32_BYTES
-    packed.set(nameBytes, offset)
-    offset += nameBytes.length
-    packed.set(bytes, offset)
-    offset += bytes.length
-  }
-  return packed
-}
-
-/** Unpacks a blob produced by `packMediaChunk` — see there for the format. Returns `Map<filename, Uint8Array>`. */
-export function unpackMediaChunk(packed) {
-  const decoder = new TextDecoder()
-  const view = new DataView(packed.buffer, packed.byteOffset, packed.byteLength)
+/** Batch convenience wrapper around `decompressMediaFile` — see there for behavior. Returns `Map<filename, Uint8Array | null>`. */
+export async function decompressMediaFiles(reader, mediaEntryByFilename, filenames) {
   const result = new Map()
-  let offset = 0
-  while (offset < packed.length) {
-    const nameLength = view.getUint32(offset, true)
-    offset += UINT32_BYTES
-    const contentLength = view.getUint32(offset, true)
-    offset += UINT32_BYTES
-    const filename = decoder.decode(packed.subarray(offset, offset + nameLength))
-    offset += nameLength
-    const content = packed.slice(offset, offset + contentLength)
-    offset += contentLength
-    result.set(filename, content)
-  }
+  for (const filename of filenames) result.set(filename, await decompressMediaFile(reader, mediaEntryByFilename, filename))
   return result
 }
 
 /**
- * Parses a `.apkg` file's bytes into deck metadata and RAW (unrendered) card
- * rows — WITHOUT decompressing any media, and WITHOUT rendering card
- * templates (see module header comment for why both are deferred). `SQL` is
- * an already-initialized sql.js module (Node path: `loadSqlJs()` above;
- * Workflow path: workflows/anki-import/src/loadSqlJs.js's static-wasm-import
- * version).
+ * Parses a `.apkg` archive (given a `Reader` — see zipRangeReader.js) into
+ * deck metadata and RAW (unrendered) card rows — WITHOUT decompressing any
+ * media, and WITHOUT rendering card templates (see module header comment
+ * for why both are deferred). `SQL` is an already-initialized sql.js module
+ * (Node path: `loadSqlJs()` above; Workflow path:
+ * workflows/anki-import/src/loadSqlJs.js's static-wasm-import version).
  *
- * Deliberately does NOT return the archive's raw bytes, even though the
- * caller will need them again later for `decompressMediaFiles` — a real
- * archive can be 100MB+, and Workers caps a whole isolate at 128MB of memory
- * (fixed, same on every plan, unlike the CPU-time limit — see the Workflow's
- * header comment). Handing the caller a reference it would hold onto for an
- * entire multi-step Workflow run risks that cap on its own, regardless of
- * how carefully CPU time and D1 usage are chunked. Callers should re-fetch
- * the archive fresh, scoped to wherever they actually need its bytes (e.g.
- * inside each step.do() callback, not in the Workflow's own outer scope), so
- * it's eligible for GC again as soon as that scope is done with it.
+ * Only ever materializes the central directory (~217KB for a 4,358-entry
+ * deck) and the two small entries (collection DB, media manifest) this
+ * needs to read — never the archive itself. `mediaEntryByFilename` carries
+ * each media entry's own zip metadata (not just its name) forward, so a
+ * later `decompressMediaFile(s)` call can range-read it directly without
+ * re-parsing the central directory.
  *
- * Returns `{ decks, entryNameByFilename, notetypeCache }`:
+ * Returns `{ decks, mediaEntryByFilename, notetypeCache }`:
  *   decks: [{ ankiDeckId, name, cardRows: [{ cardId, cardOrd, noteId, notetypeId, flds }] }]
- *   entryNameByFilename: real filename -> the zip's numbered entry name, for
- *     later `decompressMediaFiles` calls (which take the archive's bytes
- *     freshly, as their own argument, precisely so this function doesn't
- *     have to hand them back).
+ *   mediaEntryByFilename: real filename -> that entry's zip metadata
+ *     (`{ name, compressionMethod, compressedSize, uncompressedSize,
+ *     relativeOffsetOfLocalHeader }`), for `decompressMediaFile(s)`.
  *   notetypeCache: every notetype (fields + templates) referenced by any
  *     returned card, pre-loaded while the SQLite connection was still open —
  *     callers pass this straight to `renderCardChunk`, which needs it to
  *     render but never touches SQLite itself.
  */
-export async function extractDeckMetadata(arrayBuffer, SQL) {
-  const rawBytes = new Uint8Array(arrayBuffer)
+export async function extractDeckMetadata(reader, SQL) {
+  const entries = await readCentralDirectory(reader)
+  const entryByName = new Map(entries.map((entry) => [entry.name, entry]))
 
-  const rawCollectionBytes = pickCollectionBytes(rawBytes)
+  const collectionEntry = COLLECTION_ENTRY_NAMES.map((name) => entryByName.get(name)).find(Boolean)
+  if (!collectionEntry) throw new Error('Not a valid Anki export: no collection.anki2/anki21/anki21b found in the archive')
+  const rawCollectionBytes = await readZipEntryData(reader, collectionEntry)
   const sqliteBytes = await maybeDecompress(rawCollectionBytes)
 
-  const mediaManifestBytes = extractZipEntries(rawBytes, ['media'])['media']
-  const manifest = mediaManifestBytes ? decodeMediaManifest(mediaManifestBytes) : {}
-  const entryNameByFilename = new Map(Object.entries(manifest).map(([entry, filename]) => [filename, entry]))
+  const mediaManifestEntry = entryByName.get('media')
+  const manifest = mediaManifestEntry ? decodeMediaManifest(await readZipEntryData(reader, mediaManifestEntry)) : {}
+  const mediaEntryByFilename = new Map(
+    Object.entries(manifest)
+      .map(([entryName, filename]) => [filename, entryByName.get(entryName)])
+      .filter(([, entry]) => entry !== undefined)
+  )
 
   const db = new SQL.Database(stripUnsupportedCollations(SQL, sqliteBytes))
   let decks, notetypeCache
   try {
     ;({ decks, notetypeCache } = extractDeckCardRows(db))
   } finally {
-    db.close() // no more D1/SQLite queries needed once card rows + the notetype cache are extracted — rendering below is pure, and media decompression only needs entryNameByFilename plus a fresh copy of the archive's bytes
+    db.close() // no more D1/SQLite queries needed once card rows + the notetype cache are extracted — rendering below is pure, and media decompression range-reads its own entries independently
   }
 
-  return { decks, entryNameByFilename, notetypeCache }
+  return { decks, mediaEntryByFilename, notetypeCache }
 }
 
 function extractDeckCardRows(db) {

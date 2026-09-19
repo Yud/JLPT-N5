@@ -10,26 +10,38 @@
 // Functions can `.fetch()` to create a DeckImportWorkflow instance, and (2)
 // the two Workflow classes themselves.
 //
-// DeckImportWorkflow does the deck/card side of an Anki import (unzip,
-// decode the SQLite collection, upsert decks/cards), STAGES each chunk of
-// media to R2 ahead of time, and SCATTERS the actual media processing — it
-// creates one deck_import_tasks row and one independent MediaChunkWorkflow
-// instance per chunk, then its own job is done; it never waits for them.
-// See MediaChunkWorkflow's own header comment (mediaChunkWorkflow.js) and
-// migrations/0008_create_deck_import_tasks.sql for the full history: a
-// single long-lived instance coordinating every media chunk itself, the way
-// this used to work, meant every chunk shared one instance's resource budget
-// for an import's whole duration, and that broke production repeatedly (a
-// 108MB archive, and separately the sql.js WASM module used to parse it,
-// both ended up retained in run()'s own suspended state across dozens of
-// later step.do() calls). Giving each chunk its own MediaChunkWorkflow
-// instance fixed that, but not completely — production still failed on
-// ~8% of chunks even then, because each instance still fetched the full
-// archive itself, and Workers memory is per-*isolate*, not per-invocation:
-// several concurrently-scheduled instances (createBatch() creates all of
-// them at nearly the same moment) can share one isolate's 128MB budget.
-// Staging (below) means each MediaChunkWorkflow instance only ever fetches
-// a few MB, which stays safe even when several instances share an isolate.
+// DeckImportWorkflow does the deck/card side of an Anki import (parse the
+// central directory, decode the SQLite collection, upsert decks/cards) and
+// SCATTERS the actual media processing — it creates one deck_import_tasks
+// row and one independent MediaChunkWorkflow instance per chunk, then its
+// own job is done; it never waits for them. See MediaChunkWorkflow's own
+// header comment (mediaChunkWorkflow.js) and
+// migrations/0008_create_deck_import_tasks.sql for why scatter/gather
+// exists at all: a single long-lived instance coordinating every media
+// chunk itself, the way this used to work, meant every chunk shared one
+// instance's resource budget for an import's whole duration, and that broke
+// production repeatedly (a 108MB archive, and separately the sql.js WASM
+// module used to parse it, both ended up retained in run()'s own suspended
+// state across dozens of later step.do() calls).
+//
+// Neither this Workflow nor MediaChunkWorkflow ever fetches the archive's
+// full bytes at all, let alone holds them across a step boundary — see
+// ANKI-IMPORT-RANGE-READ-PLAN.md (repo root) for the full history of why
+// that guarantee, not just "scope the fetch carefully," was the actual fix:
+// even the scatter/gather split above still had each MediaChunkWorkflow
+// instance fetch the full archive itself, and Workers memory is
+// per-*isolate*, not per-invocation — several concurrently-scheduled
+// instances (createBatch() creates all of them at nearly the same moment)
+// could share one isolate's 128MB budget. `readCentralDirectory` (this
+// file's scatter phase, via extractDeckMetadata) and `readZipEntryData`
+// (MediaChunkWorkflow, via decompressMediaFile(s)) — both in
+// src/data/zipRangeReader.js — range-read only the specific bytes each
+// needs from R2 (workflows/anki-import/src/r2ZipReader.js), so this holds
+// even when many instances share an isolate. This also means the R2-staging
+// tier an earlier version of this file had (packMediaChunk/
+// extractRawMediaFiles, commit 9f8d68c) is gone entirely — it existed only
+// to work around MediaChunkWorkflow needing the full archive, which range
+// reads make unnecessary.
 //
 // Earlier designs had the browser parse the .apkg client-side and drive a
 // multi-request choreography (deck/card POST, N media-upload POSTs, a
@@ -44,10 +56,11 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { NonRetryableError } from 'cloudflare:workflows'
-import { extractDeckMetadata, renderCardChunk, extractRawMediaFiles, packMediaChunk } from '../../../src/data/ankiImport.js'
+import { extractDeckMetadata, renderCardChunk } from '../../../src/data/ankiImport.js'
 import { upsertDeckRow, upsertCardChunk } from '../../../src/server/deckImportProcessing.js'
-import { createMediaTasks, mediaTaskId, stagedMediaChunkKey } from '../../../src/server/deckImportTasks.js'
+import { createMediaTasks, mediaTaskId } from '../../../src/server/deckImportTasks.js'
 import { loadSqlJsForWorkflow } from './loadSqlJs.js'
+import { R2ZipReader } from './r2ZipReader.js'
 
 export { MediaChunkWorkflow } from './mediaChunkWorkflow.js'
 
@@ -64,52 +77,24 @@ export { MediaChunkWorkflow } from './mediaChunkWorkflow.js'
 // so it was never at risk from D1's per-invocation query-count or
 // per-query bound-parameter limits either.
 //
-// MEDIA_CHUNK_SIZE (files per MediaChunkWorkflow instance, AND per staging
-// blob — see below for why those two have to match) is sized off FOUR
-// separate, independent ceilings this hit in production:
-//   - CPU time: fflate's per-call cost is dominated by a near-fixed
-//     central-directory scan (~3-9ms locally, largely independent of chunk
-//     size up to at least 200 files), so this is sized for step count, not
-//     CPU headroom, unlike the original (unverified) CHUNK_SIZE=5 guess.
+// MEDIA_CHUNK_SIZE (files per MediaChunkWorkflow instance) no longer has to
+// account for isolate memory at all — range reads mean an instance only
+// ever holds one entry's compressed bytes at a time (typically a few KB to
+// low hundreds of KB for Anki media), regardless of how many instances
+// share an isolate. It's still sized off the remaining real ceilings:
 //   - D1 queries per invocation (50 on Free) — processMediaChunk batches a
 //     whole chunk's writes into one db.batch() call.
 //   - D1 bound parameters per query (100) — processMediaChunk's
 //     existence-check SELECT binds one `?` per filename plus one for
 //     deckId, so this has to stay comfortably under 100.
-//   - Isolate memory (128MB, fixed on every plan): NOT fixed by giving each
-//     chunk its own MediaChunkWorkflow instance alone — production still
-//     failed 4/49 times with "Worker exceeded memory limit" after that
-//     redesign shipped, because each instance still fetched the full 108MB
-//     archive, and memory is per-*isolate*, not per-invocation (a single
-//     isolate can run several concurrent instances, and createBatch()
-//     creates all of them at nearly the same moment — see
-//     mediaChunkWorkflow.js's header comment for the full mechanism). Fixed
-//     by staging each chunk's raw media to R2 ahead of time (below) so each
-//     instance only ever fetches a few MB, not 108MB.
-//
-// The staging step below extracts+packs exactly ONE chunk's worth of files
-// (MEDIA_CHUNK_SIZE, not some coarser batch) per archive fetch — profiled
-// locally against the real fixture (Kaishi.1.5k.v2.4.3.apkg): extract+pack
-// for a 90-file batch costs 3.2-8.2ms (avg ~5ms), safely under the 10ms/step
-// cap. Coarser batches were tried first and rejected: 180 files averaged
-// ~7ms but occasionally spiked; 270 files spiked to 161ms on one run (almost
-// certainly a GC pause — a warning sign about margin, not a one-off to
-// ignore) and averaged 38ms, blowing the cap outright. A batch size other
-// than MEDIA_CHUNK_SIZE would also misalign staged blobs from gather chunks
-// (a chunk needing pieces from two different staging batches), reintroducing
-// the exact cross-step accumulation problem this design exists to avoid — so
-// the two constants have to stay equal, not just both "some small number."
-//
-// Does concentrating ~49 sequential archive fetches into ONE DeckImportWorkflow
-// instance (staging) just relocate the memory risk somewhere worse? Probably
-// not, for the same reason MediaChunkWorkflow's failures happened in the
-// first place: that mechanism is concurrent instances sharing an isolate,
-// each independently holding 108MB at the same moment. A single instance's
-// own sequential step.do() calls are awaited one at a time — this instance
-// never holds two archive-sized buffers at once, by construction — so it
-// doesn't reproduce the same failure mode, even though each individual
-// fetch still carries whatever baseline per-fetch risk exists. Not proven
-// risk-free; worth watching in production, which is why this comment exists.
+//   - CPU time per step (10ms, Free): profiled locally against the real
+//     fixture (Kaishi.1.5k.v2.4.3.apkg) — range-reading + decompressing a
+//     90-file chunk's zip-layer bytes costs 0.14-1.2ms of actual CPU
+//     (sampled first/second/middle/last chunks; I/O wait from the
+//     range-read calls themselves doesn't count against this budget). Wide
+//     margin under 10ms — 90 was kept rather than raised further since
+//     nothing forces a change and D1's limits above are the tighter
+//     constraint anyway.
 const MEDIA_CHUNK_SIZE = 90
 const RENDER_CHUNK_SIZE = 150
 
@@ -123,21 +108,21 @@ const RENDER_CHUNK_SIZE = 150
 const SCATTER_BATCH_SIZE = 100
 
 /**
- * Fetches the raw upload from R2 and extracts deck metadata from it — kept
- * as its own function, not inlined into run(), specifically so its locals
- * (`arrayBuffer`, the whole archive, AND `SQL`, the loaded sql.js WASM
- * module) are scoped to THIS function's call frame and eligible for GC once
- * it returns, rather than staying part of run()'s own suspended state for
- * the rest of a long execution — see the memory-limit history in this
- * file's git log for why that distinction mattered in production (twice:
- * once for `arrayBuffer`, once for `SQL`, loaded here for the same reason).
+ * Extracts deck metadata via range reads against the raw upload in R2 — kept
+ * as its own function, not inlined into run(), so `SQL` (the loaded sql.js
+ * WASM module) is scoped to THIS function's call frame and eligible for GC
+ * once it returns, rather than staying part of run()'s own suspended state
+ * for the rest of a long execution — see the memory-limit history in this
+ * file's git log for why that distinction mattered in production. Unlike
+ * that history, `reader` never holds more than one small range read's worth
+ * of bytes at a time regardless of scope — see ANKI-IMPORT-RANGE-READ-PLAN.md.
  */
 async function fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId }) {
-  const object = await mediaBucket.get(r2Key)
-  if (!object) throw new NonRetryableError(`Raw upload missing for job ${jobId}`)
-  const arrayBuffer = await object.arrayBuffer()
+  const head = await mediaBucket.head(r2Key)
+  if (!head) throw new NonRetryableError(`Raw upload missing for job ${jobId}`)
+  const reader = new R2ZipReader(mediaBucket, r2Key)
   const SQL = await loadSqlJsForWorkflow()
-  return extractDeckMetadata(arrayBuffer, SQL)
+  return extractDeckMetadata(reader, SQL)
 }
 
 export class DeckImportWorkflow extends WorkflowEntrypoint {
@@ -158,8 +143,13 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       // over the immutable uploaded bytes, so it's safe (and per Cloudflare's
       // own guidance, correct) to run outside a step — a restart just
       // re-parses. See fetchAndExtractDeckMetadata's own doc comment for why
-      // it's a separate function rather than inlined here.
-      const { decks, entryNameByFilename, notetypeCache } = await fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId })
+      // it's a separate function rather than inlined here. Also safely under
+      // budget on its own: central-directory parsing (readCentralDirectory,
+      // src/data/zipRangeReader.js) measured at 3.08ms against the real
+      // fixture's 4,358 entries — see ANKI-IMPORT-RANGE-READ-PLAN.md for why
+      // that number, not unzipit's own 21.2ms for the same parse, is what
+      // this relies on.
+      const { decks, mediaEntryByFilename, notetypeCache } = await fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId })
 
       await step.do('update-deck-total', async () => {
         await db
@@ -210,27 +200,18 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
           chunks.push({ index: i, filenames: mediaNeededList.slice(i, i + MEDIA_CHUNK_SIZE) })
         }
 
-        // STAGE: one step per chunk — see the MEDIA_CHUNK_SIZE comment above
-        // for why this can't be coarser (CPU budget) or reuse a shared
-        // archive fetch across steps (the memory-retention bug this whole
-        // file's history is about). Each step re-fetches the archive fresh,
-        // scoped to its own callback, extracts just this chunk's raw media
-        // bytes, packs them, and stages the result to R2 — so the
-        // MediaChunkWorkflow instance created for this chunk below never
-        // has to touch the archive itself.
-        for (const chunk of chunks) {
-          await step.do(`stage-media-${deck.ankiDeckId}-${chunk.index}`, async () => {
-            const object = await mediaBucket.get(r2Key)
-            const archiveBytes = new Uint8Array(await object.arrayBuffer())
-            const rawFiles = extractRawMediaFiles(archiveBytes, entryNameByFilename, chunk.filenames)
-            const packed = packMediaChunk(rawFiles)
-            await mediaBucket.put(stagedMediaChunkKey(jobId, deck.ankiDeckId, chunk.index), packed)
-          })
-        }
-
         // SCATTER: create task rows + MediaChunkWorkflow instances, batched
         // up to createBatch()'s 100-instance-per-call limit (independent of
-        // MEDIA_CHUNK_SIZE — for this deck, 49 chunks fit in one batch).
+        // MEDIA_CHUNK_SIZE — for this deck, 49 chunks fit in one batch). No
+        // staging step: each instance gets its own files' zip metadata
+        // (offset/size/compression method, from mediaEntryByFilename)
+        // directly in its payload, and range-reads that data itself from
+        // the original r2Key — see mediaChunkWorkflow.js and
+        // ANKI-IMPORT-RANGE-READ-PLAN.md. A filename with no
+        // mediaEntryByFilename match (referenced by a card but missing from
+        // the archive) is passed through with no zip metadata — MediaChunkWorkflow
+        // and processMediaChunk already treat that as a `bytes: null` skip,
+        // not an error.
         for (let batchStart = 0; batchStart < chunks.length; batchStart += SCATTER_BATCH_SIZE) {
           const batch = chunks.slice(batchStart, batchStart + SCATTER_BATCH_SIZE)
           await step.do(`scatter-media-${deck.ankiDeckId}-${batchStart}`, async () => {
@@ -244,7 +225,18 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
                 r2Key,
                 deckId,
                 taskId: taskIds[i],
-                chunkR2Key: stagedMediaChunkKey(jobId, deck.ankiDeckId, chunk.index),
+                files: chunk.filenames.map((filename) => {
+                  const entry = mediaEntryByFilename.get(filename)
+                  return entry
+                    ? {
+                        filename,
+                        compressionMethod: entry.compressionMethod,
+                        compressedSize: entry.compressedSize,
+                        uncompressedSize: entry.uncompressedSize,
+                        relativeOffsetOfLocalHeader: entry.relativeOffsetOfLocalHeader,
+                      }
+                    : { filename }
+                }),
               },
             }))
             await mediaChunkWorkflow.createBatch(instances)

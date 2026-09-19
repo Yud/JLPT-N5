@@ -7,16 +7,14 @@ import { zstdCompressSync } from 'node:zlib'
 import {
   decodeMediaManifest,
   decodeTemplateConfig,
-  decompressMediaBytes,
   decompressMediaFile,
+  decompressMediaFiles,
   extractDeckMetadata,
-  extractRawMediaFiles,
   loadSqlJs,
-  packMediaChunk,
   renderAnkiTemplate,
   renderCardChunk,
-  unpackMediaChunk,
 } from './ankiImport.js'
+import { ArrayBufferZipReader } from './zipRangeReader.js'
 
 // Node-side sql.js init for building fixtures, independent of ankiImport.js's
 // own browser-facing loader — see that file's loadSqlJs()/loadWasmBinary()
@@ -191,7 +189,7 @@ describe('extractDeckMetadata', () => {
       mediaManifestBytes: utf8.encode(JSON.stringify({})),
     })
 
-    const { decks, notetypeCache } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const { decks, notetypeCache } = await extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())
     expect(decks).toHaveLength(1)
     expect(decks[0]).toMatchObject({ ankiDeckId: 2, name: 'My Deck' })
     expect(renderCardChunk(decks[0].cardRows, notetypeCache)).toEqual([
@@ -217,7 +215,7 @@ describe('extractDeckMetadata', () => {
     zip.file('collection.anki2', stubCollectionBytes) // legacy stub present too — must be ignored
     const finalBuffer = await zip.generateAsync({ type: 'arraybuffer' })
 
-    const { decks, notetypeCache } = await extractDeckMetadata(finalBuffer, await loadSqlJs())
+    const { decks, notetypeCache } = await extractDeckMetadata(new ArrayBufferZipReader(finalBuffer), await loadSqlJs())
     expect(decks).toHaveLength(1)
     expect(decks[0]).toMatchObject({ ankiDeckId: 2, name: 'Kaishi-like' })
     expect(renderCardChunk(decks[0].cardRows, notetypeCache)).toEqual([
@@ -239,7 +237,7 @@ describe('extractDeckMetadata', () => {
     })
     const buffer = await buildApkgZip({ collectionEntryName: 'collection.anki2', collectionBytes })
 
-    const { decks } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const { decks } = await extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())
     expect(decks.map((d) => d.name).sort()).toEqual(['Sub A', 'Sub B'])
   })
 
@@ -258,14 +256,14 @@ describe('extractDeckMetadata', () => {
       mediaFiles: { 0: audioBytes, 1: new Uint8Array([9, 9]) },
     })
 
-    const { decks, notetypeCache, entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const { decks, notetypeCache, mediaEntryByFilename } = await extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())
     const [card] = renderCardChunk(decks[0].cardRows, notetypeCache)
     expect(card.mediaFilenames).toEqual(['answer.mp3'])
     // decompressMediaFile is a separate, deliberately un-eager phase (see
     // module header comment) — not called during extractDeckMetadata itself,
-    // and takes the archive's bytes as its own argument rather than getting
-    // them back from extractDeckMetadata (see that function's doc comment).
-    expect(await decompressMediaFile(new Uint8Array(buffer), entryNameByFilename, 'answer.mp3')).toEqual(audioBytes)
+    // and range-reads the entry fresh via its own reader rather than getting
+    // bytes back from extractDeckMetadata (see that function's doc comment).
+    expect(await decompressMediaFile(new ArrayBufferZipReader(buffer), mediaEntryByFilename, 'answer.mp3')).toEqual(audioBytes)
   })
 
   it('best-effort renders a cloze note by revealing the answer rather than skipping the card (FR-013)', async () => {
@@ -281,7 +279,7 @@ describe('extractDeckMetadata', () => {
     })
     const buffer = await buildApkgZip({ collectionEntryName: 'collection.anki2', collectionBytes })
 
-    const { decks, notetypeCache } = await extractDeckMetadata(buffer, await loadSqlJs())
+    const { decks, notetypeCache } = await extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())
     const [card] = renderCardChunk(decks[0].cardRows, notetypeCache)
     expect(card.front).toBe('The capital is Paris.')
     expect(card.back).toBe('The capital is Paris.<br>a hint')
@@ -291,12 +289,12 @@ describe('extractDeckMetadata', () => {
     const zip = new JSZip()
     zip.file('not-anki.txt', 'hello')
     const buffer = await zip.generateAsync({ type: 'arraybuffer' })
-    await expect(extractDeckMetadata(buffer, await loadSqlJs())).rejects.toThrow(/not a valid anki export/i)
+    await expect(extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())).rejects.toThrow(/not a valid anki export/i)
   })
 })
 
-describe('decompressMediaFile', () => {
-  it('decompresses individually zstd-compressed media entries (modern Anki packages compress every media file, not just the collection — verified against a real ~100MB sample deck: all 4,354 of its media entries were compressed)', async () => {
+describe('decompressMediaFile / decompressMediaFiles', () => {
+  it('range-reads and decompresses individually zstd-compressed media entries (modern Anki packages compress every media file, not just the collection — verified against a real ~100MB sample deck: all 4,354 of its media entries were compressed)', async () => {
     const notetype = { id: 1, fields: ['Front', 'Back'], templates: [{ qfmt: '{{Front}}', afmt: '[sound:{{Back}}]' }] }
     const collectionBytes = await buildCollectionDb({
       decks: [{ id: 2, name: 'Audio Deck' }],
@@ -311,82 +309,32 @@ describe('decompressMediaFile', () => {
       mediaFiles: { 0: zstdCompressSync(realAudioBytes) },
     })
 
-    const { entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(await decompressMediaFile(new Uint8Array(buffer), entryNameByFilename, 'answer.mp3')).toEqual(realAudioBytes)
+    const { mediaEntryByFilename } = await extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())
+    expect(await decompressMediaFile(new ArrayBufferZipReader(buffer), mediaEntryByFilename, 'answer.mp3')).toEqual(realAudioBytes)
   })
 
   it('returns null for a filename the archive does not actually contain', async () => {
     const collectionBytes = await buildCollectionDb({ decks: [], notetype: BASIC_NOTETYPE, notes: [] })
     const buffer = await buildApkgZip({ collectionEntryName: 'collection.anki2', collectionBytes })
 
-    const { entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    expect(await decompressMediaFile(new Uint8Array(buffer), entryNameByFilename, 'missing.mp3')).toBeNull()
+    const { mediaEntryByFilename } = await extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())
+    expect(await decompressMediaFile(new ArrayBufferZipReader(buffer), mediaEntryByFilename, 'missing.mp3')).toBeNull()
   })
-})
 
-describe('extractRawMediaFiles + decompressMediaBytes (staging split)', () => {
-  it('extracts zip-layer bytes without doing the zstd layer, then decompressMediaBytes does just that second layer', async () => {
+  it('decompressMediaFiles batches several filenames, mixing present and missing (matches processMediaChunk\'s bytes:null skip contract)', async () => {
     const collectionBytes = await buildCollectionDb({ decks: [], notetype: BASIC_NOTETYPE, notes: [] })
     const realAudioBytes = new Uint8Array([10, 20, 30, 40, 50])
-    const zstdCompressed = zstdCompressSync(realAudioBytes)
     const buffer = await buildApkgZip({
       collectionEntryName: 'collection.anki2',
       collectionBytes,
       mediaManifestBytes: utf8.encode(JSON.stringify({ 0: 'answer.mp3' })),
-      mediaFiles: { 0: zstdCompressed },
+      mediaFiles: { 0: zstdCompressSync(realAudioBytes) },
     })
 
-    const { entryNameByFilename } = await extractDeckMetadata(buffer, await loadSqlJs())
-    const raw = extractRawMediaFiles(new Uint8Array(buffer), entryNameByFilename, ['answer.mp3', 'missing.mp3'])
+    const { mediaEntryByFilename } = await extractDeckMetadata(new ArrayBufferZipReader(buffer), await loadSqlJs())
+    const results = await decompressMediaFiles(new ArrayBufferZipReader(buffer), mediaEntryByFilename, ['answer.mp3', 'missing.mp3'])
 
-    // Still zstd-compressed — extractRawMediaFiles is deliberately one layer short of decompressMediaFile.
-    expect(raw.get('answer.mp3')).toEqual(new Uint8Array(zstdCompressed))
-    // Missing filenames are omitted entirely, not included as null/undefined.
-    expect(raw.has('missing.mp3')).toBe(false)
-    expect(raw.size).toBe(1)
-
-    expect(await decompressMediaBytes(raw.get('answer.mp3'))).toEqual(realAudioBytes)
-  })
-
-  it('passes through already-uncompressed bytes unchanged (legacy Anki media, no zstd layer)', async () => {
-    const plainBytes = new Uint8Array([1, 2, 3])
-    expect(await decompressMediaBytes(plainBytes)).toEqual(plainBytes)
-  })
-})
-
-describe('packMediaChunk / unpackMediaChunk', () => {
-  it('round-trips multiple files, including empty content and unicode filenames', () => {
-    const files = new Map([
-      ['answer.mp3', new Uint8Array([1, 2, 3, 4, 5])],
-      ['骨_ホネ＼_2_NHK-2016.mp3', new Uint8Array([9, 9])],
-      ['empty.png', new Uint8Array([])],
-    ])
-
-    const packed = packMediaChunk(files)
-    const unpacked = unpackMediaChunk(packed)
-
-    expect(unpacked.size).toBe(3)
-    expect(unpacked.get('answer.mp3')).toEqual(new Uint8Array([1, 2, 3, 4, 5]))
-    expect(unpacked.get('骨_ホネ＼_2_NHK-2016.mp3')).toEqual(new Uint8Array([9, 9]))
-    expect(unpacked.get('empty.png')).toEqual(new Uint8Array([]))
-  })
-
-  it('round-trips an empty chunk', () => {
-    const packed = packMediaChunk(new Map())
-    expect(packed.length).toBe(0)
-    expect(unpackMediaChunk(packed).size).toBe(0)
-  })
-
-  it('unpacks correctly from a Uint8Array view with a non-zero byteOffset (e.g. from a larger buffer, matching how a fetched R2 body is materialized)', () => {
-    const files = new Map([['a.mp3', new Uint8Array([7, 8, 9])]])
-    const packed = packMediaChunk(files)
-
-    // Simulate the packed bytes living at an offset within a larger buffer.
-    const padded = new Uint8Array(5 + packed.length)
-    padded.set(packed, 5)
-    const view = padded.subarray(5)
-
-    const unpacked = unpackMediaChunk(view)
-    expect(unpacked.get('a.mp3')).toEqual(new Uint8Array([7, 8, 9]))
+    expect(results.get('answer.mp3')).toEqual(realAudioBytes)
+    expect(results.get('missing.mp3')).toBeNull()
   })
 })

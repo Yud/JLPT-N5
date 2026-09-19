@@ -9,22 +9,21 @@
 // step.do() call — several production crashes before that was tracked
 // down.
 //
-// This instance does NOT fetch the 108MB archive itself, even though the
-// first version of this design did. That still failed in production (4/49
-// instances hit "Worker exceeded memory limit") — and, per Cloudflare's own
-// docs, memory is "per-isolate, not per-invocation: a single isolate can
-// handle many concurrent requests." createBatch() creates every chunk's
-// instance at nearly the same moment, so several can land on the same
-// isolate concurrently — if each is independently holding its own 108MB
-// archive at once, that blows the shared 128MB budget regardless of any
-// individual chunk's own content (confirmed: the 4 failed chunks' actual
-// decompressed sizes were unremarkable, statistically indistinguishable
-// from chunks that succeeded). DeckImportWorkflow's scatter phase now stages
-// each chunk's raw media bytes to R2 ahead of time (extractRawMediaFiles +
-// packMediaChunk, src/data/ankiImport.js) — this instance only ever fetches
-// its own few-MB blob, which stays safe even under concurrent co-scheduling
-// (many instances at a few MB each easily share an isolate; even two at
-// 108MB each already doesn't).
+// This instance never fetches the archive at all, let alone the whole
+// thing — it range-reads (via R2ZipReader) only its own chunk's files,
+// using the zip metadata (offset/size/compression method) DeckImportWorkflow
+// already resolved and passed directly in this instance's payload
+// (event.payload.files). That's a structural fix, not just a smaller
+// fetch: memory is per-*isolate*, not per-invocation (Workers platform
+// limits docs — "a single isolate can handle many concurrent requests"),
+// and createBatch() creates every chunk's instance at nearly the same
+// moment, so several land on the same isolate concurrently regardless of
+// how small any one instance's own footprint is. An earlier version of
+// this design had each instance fetch a pre-staged, pre-packed blob from R2
+// instead of the original archive (commit 9f8d68c) — safer than fetching
+// the full archive, but still an unnecessary intermediate copy once range
+// reads make the original archive itself cheap to read from directly. See
+// ANKI-IMPORT-RANGE-READ-PLAN.md (repo root) for the full history.
 //
 // No coordination with the parent or with sibling chunks happens through
 // the Workflows engine itself (e.g. instance status polling) — completion
@@ -32,34 +31,34 @@
 // about and is what the GET /api/decks/import/:jobId endpoint already reads
 // from. See completeMediaTask (src/server/deckImportTasks.js) for exactly
 // how a chunk finishing (successfully or not) updates its own row and, for
-// the last chunk to finish, finalizes the whole job (including deleting
-// every chunk's staged blob, not just the raw upload).
+// the last chunk to finish, finalizes the whole job (deleting the raw
+// upload).
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
-import { decompressMediaBytes, unpackMediaChunk } from '../../../src/data/ankiImport.js'
+import { decompressMediaFiles } from '../../../src/data/ankiImport.js'
 import { processMediaChunk } from '../../../src/server/mediaImportProcessing.js'
 import { completeMediaTask } from '../../../src/server/deckImportTasks.js'
+import { R2ZipReader } from './r2ZipReader.js'
 
 export class MediaChunkWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
-    const { jobId, r2Key, deckId, taskId, chunkR2Key } = event.payload
+    const { jobId, r2Key, deckId, taskId, files } = event.payload
     const db = this.env.DB
     const mediaBucket = this.env.MEDIA
 
     try {
       await step.do('process-chunk', async () => {
-        // Fresh fetch, scoped to this step.do() callback's own frame — a
-        // few MB, not the whole archive (see this file's header comment).
-        const object = await mediaBucket.get(chunkR2Key)
-        if (!object) throw new Error(`Staged media chunk missing: ${chunkR2Key}`)
-        const packed = new Uint8Array(await object.arrayBuffer())
-        const rawFilesByName = unpackMediaChunk(packed)
-
-        const files = []
-        for (const [filename, zipLayerBytes] of rawFilesByName) {
-          files.push({ filename, bytes: await decompressMediaBytes(zipLayerBytes) })
-        }
-        await processMediaChunk({ db, mediaBucket, deckId, files })
+        // Fresh reader, scoped to this step.do() callback's own frame —
+        // each read() only ever pulls one entry's own compressed bytes, not
+        // the archive (see this file's header comment).
+        const reader = new R2ZipReader(mediaBucket, r2Key)
+        const mediaEntryByFilename = new Map(
+          files.filter((f) => f.relativeOffsetOfLocalHeader !== undefined).map((f) => [f.filename, f])
+        )
+        const filenames = files.map((f) => f.filename)
+        const decompressed = await decompressMediaFiles(reader, mediaEntryByFilename, filenames)
+        const chunkFiles = filenames.map((filename) => ({ filename, bytes: decompressed.get(filename) }))
+        await processMediaChunk({ db, mediaBucket, deckId, files: chunkFiles })
       })
 
       await step.do('complete-task', async () => {
