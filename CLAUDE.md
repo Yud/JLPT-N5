@@ -17,3 +17,16 @@ close` when done.
 
 This does not apply to the project's own automated Playwright test suite (`tests/e2e/`,
 run via `npm run test:e2e`) — that's a separate, already-configured setup.
+
+# Resource-constrained code design
+
+For any code that runs in a resource-constrained runtime (Cloudflare Workers/Workflows,
+containers, serverless functions, anything with a per-invocation CPU/memory/time budget),
+design for the tightest realistic resource limits from the start — regardless of which
+plan/tier is nominally available. Never hold a whole file, response body, or large payload
+in memory when a chunked, streamed, or range-based alternative exists. Prefer scatter/gather
+or streaming as the default shape for anything whose cost scales with input size, not as a
+fix applied after a production failure. Apply this as a senior engineer would by default,
+without waiting for the user to specify resource limits explicitly — see the commit history
+around `workflows/anki-import/` (six+ production incidents culminating in a full redesign
+to range reads) for a case study of what it costs when this isn't done up front.
