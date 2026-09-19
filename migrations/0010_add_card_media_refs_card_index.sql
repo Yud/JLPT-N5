@@ -1,0 +1,16 @@
+-- card_media_refs's primary key (deck_id, filename, card_id) serves the read
+-- side fine (processMediaChunk's WHERE deck_id = ? AND filename IN (...)),
+-- but src/server/deckImportProcessing.js's upsertCardChunk also deletes by
+-- (deck_id, card_id) before re-inserting a card's current refs — skipping
+-- `filename` means that DELETE can't use the PK as a seek, so SQLite scans
+-- every row for the deck checking card_id row by row. Confirmed via the D1
+-- dashboard's per-query metrics on a real production import
+-- (Kaishi.1.5k.v2.4.3.apkg, 1,501 cards, 4,354 media files): 716 DELETE
+-- calls read 3.22M rows total (~4,500 rows/call, growing as the deck's own
+-- card_media_refs rows accumulate during import) — most of a single
+-- import's D1 rows-read cost, and the same failure shape as the instr()
+-- scan migration 0009 itself replaced. This index gives that DELETE a real
+-- seek bounded by just that card's own ref rows (typically ~3), independent
+-- of the PK above (SQLite picks whichever index actually matches a query's
+-- WHERE clause).
+CREATE INDEX card_media_refs_by_card ON card_media_refs (deck_id, card_id);

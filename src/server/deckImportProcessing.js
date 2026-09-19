@@ -78,12 +78,16 @@ export async function upsertCardChunk({ db, deckId, cards }) {
         .bind(id, deckId, card.ankiNoteId, card.front, card.back, now)
     )
 
-    // Deleted by card_id (indexed as the PK's third column — SQLite can
-    // still use a PK/index prefix scan here since deck_id is fixed and
-    // known, but card_id alone isn't a leading prefix; this is a small,
-    // bounded scan of just this one card's own ref rows, not the deck's
-    // cards) — cheap regardless, since one card references at most a
-    // handful of files.
+    // Deleted by (deck_id, card_id) — NOT a prefix of the table's own PK
+    // (deck_id, filename, card_id), which skips `filename`. An earlier
+    // version of this comment assumed that was still a cheap, bounded scan;
+    // it verified out false against real D1 data (Cloudflare D1 dashboard,
+    // a production import of the real Kaishi.1.5k.v2.4.3.apkg deck): 716
+    // calls read 3.22M rows total, ~4,500 rows/call, growing as the deck's
+    // own card_media_refs rows accumulated during import — SQLite was
+    // scanning every row for the deck, not just this card's own handful.
+    // migrations/0010_add_card_media_refs_card_index.sql adds the
+    // (deck_id, card_id) index this actually needs.
     writes.push(db.prepare(`DELETE FROM card_media_refs WHERE deck_id = ? AND card_id = ?`).bind(deckId, id))
     for (const filename of card.mediaFilenames) {
       writes.push(
