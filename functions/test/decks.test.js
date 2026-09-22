@@ -15,6 +15,7 @@ beforeEach(async () => {
   await env.DB.exec('DELETE FROM decks')
   await env.DB.exec('DELETE FROM cards')
   await env.DB.exec('DELETE FROM media_assets')
+  await env.DB.exec('DELETE FROM card_media_refs')
   await env.DB.exec('DELETE FROM card_review_state')
   await env.DB.exec('DELETE FROM card_suspensions')
 })
@@ -60,6 +61,10 @@ describe('DELETE /api/decks/:deckId', () => {
       .run()
     await env.MEDIA.put('asset-555', new Uint8Array([1, 2, 3]))
     await env.DB
+      .prepare('INSERT INTO card_media_refs (deck_id, filename, card_id) VALUES (?, ?, ?)')
+      .bind('555', 'a.mp3', 'imported-555-1')
+      .run()
+    await env.DB
       .prepare('INSERT INTO card_review_state (user_email, card_id, due_at) VALUES (?, ?, ?)')
       .bind('test@example.com', 'imported-555-1', Date.now())
       .run()
@@ -84,7 +89,7 @@ describe('DELETE /api/decks/:deckId', () => {
     expect(response.status).toBe(404)
   })
 
-  it('cascades cards, media (D1 rows and R2 objects), and review history', async () => {
+  it('cascades cards, media (D1 rows and R2 objects), media refs, and review history', async () => {
     await seedDeckWithMediaAndReview()
 
     const response = await deleteDeck('555')
@@ -93,6 +98,10 @@ describe('DELETE /api/decks/:deckId', () => {
     expect(await env.DB.prepare('SELECT * FROM decks WHERE id = ?').bind('555').first()).toBeNull()
     expect(await env.DB.prepare('SELECT * FROM cards WHERE deck_id = ?').bind('555').first()).toBeNull()
     expect(await env.DB.prepare('SELECT * FROM media_assets WHERE deck_id = ?').bind('555').first()).toBeNull()
+    // card_media_refs has no FK to cards/decks — nothing removes these
+    // implicitly, so a regression here leaks the whole reference index for
+    // any deck that's deleted and never reimported.
+    expect(await env.DB.prepare('SELECT * FROM card_media_refs WHERE deck_id = ?').bind('555').first()).toBeNull()
     expect(await env.DB.prepare('SELECT * FROM card_review_state WHERE card_id = ?').bind('imported-555-1').first()).toBeNull()
     expect(await env.DB.prepare('SELECT * FROM card_suspensions WHERE card_id = ?').bind('imported-555-1').first()).toBeNull()
     expect(await env.MEDIA.get('asset-555')).toBeNull()
@@ -104,9 +113,16 @@ describe('DELETE /api/decks/:deckId', () => {
       .prepare('INSERT INTO decks (id, anki_deck_id, name, card_count, imported_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
       .bind('666', 666, 'Safe Deck', 0, Date.now(), Date.now())
       .run()
+    // Same filename as the doomed deck's asset — the refs delete is scoped by
+    // deck_id, not filename, so this must survive.
+    await env.DB
+      .prepare('INSERT INTO card_media_refs (deck_id, filename, card_id) VALUES (?, ?, ?)')
+      .bind('666', 'a.mp3', 'imported-666-1')
+      .run()
 
     await deleteDeck('555')
 
     expect(await env.DB.prepare('SELECT * FROM decks WHERE id = ?').bind('666').first()).not.toBeNull()
+    expect(await env.DB.prepare('SELECT * FROM card_media_refs WHERE deck_id = ?').bind('666').first()).not.toBeNull()
   })
 })
