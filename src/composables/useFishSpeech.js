@@ -8,7 +8,7 @@
 const cache = new Map() // text -> Blob
 
 export function useFishSpeech() {
-  async function speak(text) {
+  async function speak(text, rate = 1) {
     if (!text || typeof Audio === 'undefined') return
 
     let blob = cache.get(text)
@@ -25,6 +25,7 @@ export function useFishSpeech() {
 
     const objectUrl = URL.createObjectURL(blob)
     const audio = new Audio(objectUrl)
+    audio.playbackRate = rate // the MP3 itself is unaffected — same cached blob at any speed
     audio.addEventListener('ended', () => URL.revokeObjectURL(objectUrl), { once: true })
     await audio.play()
   }

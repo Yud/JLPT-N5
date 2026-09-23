@@ -15,7 +15,7 @@
         <option value="fish">Fish Audio</option>
       </select>
     </div>
-    <div v-if="voice === 'kyoko'" class="mt-3 flex items-center justify-center gap-2">
+    <div class="mt-3 flex items-center justify-center gap-2">
       <label for="rate" class="text-sm text-muted">Speed</label>
       <input id="rate" v-model.number="rate" type="range" min="0.5" max="1.5" step="0.1" class="w-32" />
       <span class="w-10 text-sm text-muted">{{ rate.toFixed(1) }}x</span>
@@ -51,7 +51,7 @@ async function play() {
 
   loading.value = true
   try {
-    await speakFish(text.value)
+    await speakFish(text.value, rate.value)
   } catch (err) {
     error.value = err.message || 'Fish Audio playback failed — try again.'
   } finally {
