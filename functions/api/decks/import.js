@@ -11,9 +11,6 @@
 import { AwsClient } from 'aws4fetch'
 
 export async function onRequestPost(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const jobId = crypto.randomUUID()
   const r2Key = `raw-imports/${jobId}.apkg`
 

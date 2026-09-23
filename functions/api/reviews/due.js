@@ -12,9 +12,7 @@ import { DECKS } from '../../../src/data/decks.js'
 import { buildStudyQueue } from '../../../src/scheduling/studyQueue.js'
 
 export async function onRequestGet(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
+  const { email } = context.data
   const deck = new URL(context.request.url).searchParams.get('deck')
   const db = context.env.DB
   let cardIds = DECKS[deck]

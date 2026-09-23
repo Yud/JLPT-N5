@@ -8,9 +8,7 @@ import { isKnownCardId } from './_shared.js'
 const GRADES = new Set(['again', 'hard', 'good', 'easy'])
 
 export async function onRequestPost(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
+  const { email } = context.data
   const { cardId } = context.params
   if (!(await isKnownCardId(context.env.DB, cardId))) return new Response(`Unknown card: ${cardId}`, { status: 404 })
 

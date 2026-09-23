@@ -13,9 +13,6 @@
 // task that fails), so that part of the contract is unchanged.
 
 export async function onRequestGet(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const { jobId } = context.params
   const job = await context.env.DB.prepare('SELECT * FROM deck_import_jobs WHERE id = ?').bind(jobId).first()
   if (!job) return new Response(`Unknown job: ${jobId}`, { status: 404 })

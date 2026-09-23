@@ -6,9 +6,6 @@
 // trigger shape the old media/process.js endpoint used.
 
 export async function onRequestPost(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const { jobId } = context.params
   const job = await context.env.DB.prepare('SELECT r2_key FROM deck_import_jobs WHERE id = ?').bind(jobId).first()
   if (!job) return new Response(`Unknown job: ${jobId}`, { status: 404 })

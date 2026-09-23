@@ -38,9 +38,6 @@ function chunk(array, size) {
 }
 
 export async function onRequestPost(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const apiKey = context.env.WANIKANI_API_KEY
   if (!apiKey) return new Response('WANIKANI_API_KEY is not configured on this deployment', { status: 500 })
 

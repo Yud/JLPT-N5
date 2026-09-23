@@ -6,9 +6,6 @@
 // construction, not a special-cased check).
 
 export async function onRequestDelete(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const { deckId } = context.params
   const db = context.env.DB
   const deck = await db.prepare('SELECT id FROM decks WHERE id = ?').bind(deckId).first()

@@ -10,9 +10,7 @@
 import { isKnownCardId } from '../_shared.js'
 
 export async function onRequestPost(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
+  const { email } = context.data
   const { cardId } = context.params
   if (!(await isKnownCardId(context.env.DB, cardId))) return new Response(`Unknown card: ${cardId}`, { status: 404 })
 
@@ -25,9 +23,7 @@ export async function onRequestPost(context) {
 }
 
 export async function onRequestDelete(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
+  const { email } = context.data
   const { cardId } = context.params
   await context.env.DB.prepare('DELETE FROM card_suspensions WHERE user_email = ? AND card_id = ?').bind(email, cardId).run()
 

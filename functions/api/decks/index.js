@@ -9,9 +9,6 @@ function displayName(id) {
 }
 
 export async function onRequestGet(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const builtIn = Object.values(DECK_NAMES).map((id) => ({
     id,
     name: displayName(id),

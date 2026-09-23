@@ -4,9 +4,6 @@
 // from a public bucket/domain (specs/003-anki-deck-import, research.md §4).
 
 export async function onRequestGet(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const { mediaAssetId } = context.params
   const asset = await context.env.DB
     .prepare('SELECT content_type FROM media_assets WHERE id = ?')

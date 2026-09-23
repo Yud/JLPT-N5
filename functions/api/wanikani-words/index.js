@@ -5,9 +5,6 @@
 // WaniKani account — this endpoint only ever reads it back.
 
 export async function onRequestGet(context) {
-  const email = context.request.headers.get('Cf-Access-Authenticated-User-Email')
-  if (!email) return new Response('Unauthorized', { status: 401 })
-
   const { results } = await context.env.DB
     .prepare('SELECT subject_id, characters, meanings, readings, level, srs_stage, audio FROM wanikani_words')
     .all()
