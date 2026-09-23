@@ -107,21 +107,27 @@ describe('processMediaChunk', () => {
     expect(card.front).toBe(`Front [sound:/api/media/${second.mediaAssetId}]`)
   })
 
-  it('handles a chunk larger than D1\'s 100-bound-parameters-per-query limit without erroring', async () => {
-    // Regression test: the existence-check SELECT binds one `?` per filename
-    // plus one for deckId — a single query for a 150-file chunk would bind
-    // 151 params and fail with "D1_ERROR: too many SQL variables" (hit in
-    // production at a real chunk size of 100). 150 here is arbitrary, just
-    // comfortably past both the 100-param limit and MAX_FILENAMES_PER_EXISTENCE_QUERY.
-    const files = Array.from({ length: 150 }, (_, i) => ({ filename: `f${i}.mp3`, bytes: new Uint8Array([i % 256]) }))
+  it(
+    'handles a chunk larger than D1\'s 100-bound-parameters-per-query limit without erroring',
+    async () => {
+      // Regression test: the existence-check SELECT binds one `?` per filename
+      // plus one for deckId — a single query for a 150-file chunk would bind
+      // 151 params and fail with "D1_ERROR: too many SQL variables" (hit in
+      // production at a real chunk size of 100). 150 here is arbitrary, just
+      // comfortably past both the 100-param limit and MAX_FILENAMES_PER_EXISTENCE_QUERY.
+      const files = Array.from({ length: 150 }, (_, i) => ({ filename: `f${i}.mp3`, bytes: new Uint8Array([i % 256]) }))
 
-    const results = await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files })
+      const results = await processMediaChunk({ db: env.DB, mediaBucket: env.MEDIA, deckId: '222', files })
 
-    expect(results).toHaveLength(150)
-    expect(results.every((r) => typeof r.mediaAssetId === 'string')).toBe(true)
-    const { results: assets } = await env.DB.prepare('SELECT filename FROM media_assets WHERE deck_id = ?').bind('222').all()
-    expect(assets).toHaveLength(150)
-  })
+      expect(results).toHaveLength(150)
+      expect(results.every((r) => typeof r.mediaAssetId === 'string')).toBe(true)
+      const { results: assets } = await env.DB.prepare('SELECT filename FROM media_assets WHERE deck_id = ?').bind('222').all()
+      expect(assets).toHaveLength(150)
+    },
+    // 150 sequential D1 round-trips routinely exceeds Vitest's default 5000ms
+    // under load in the local workerd test runtime — not a hang, just slow.
+    15000
+  )
 
   it('rewrites every card that shares a media file, not just one', async () => {
     // A shared audio clip referenced by two different notes — the old
