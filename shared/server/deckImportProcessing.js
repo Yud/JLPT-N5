@@ -1,11 +1,13 @@
-// Deck/card D1 upsert logic, shared by the DeckImportWorkflow's per-deck and
+// Deck/card upsert logic, shared by the DeckImportWorkflow's per-deck and
 // per-card-chunk steps (workflows/anki-import/src/index.js) — extracted from
 // the old functions/api/decks/import.js so it's callable from a Workflow step
 // instead of only an HTTP handler. Front/back text is inserted with its raw
 // Anki media references (`[sound:...]`, `src="..."`) still unrewritten —
 // that rewrite happens later, per media chunk, in processMediaChunk
 // (mediaImportProcessing.js), once each referenced file's permanent
-// media_assets id is known.
+// media_assets id is known. All actual D1 access lives in ../repos/ —
+// decksRepo, cardsRepo, cardMediaRefsRepo — this file is the orchestration
+// on top.
 //
 // Split into two functions, not one combined upsert, because card rendering
 // itself is now chunked across many Workflow steps (see
@@ -14,6 +16,10 @@
 // happens) can be written once, before any card is rendered, while cards
 // trickle in a chunk at a time from separate steps.
 
+import * as decksRepo from '../repos/decksRepo.js'
+import * as cardsRepo from '../repos/cardsRepo.js'
+import * as cardMediaRefsRepo from '../repos/cardMediaRefsRepo.js'
+
 function cardId(deckId, ankiNoteId) {
   return `imported-${deckId}-${ankiNoteId}`
 }
@@ -21,20 +27,7 @@ function cardId(deckId, ankiNoteId) {
 /** Upserts one parsed deck's row (matched by anki_deck_id), no cards. Returns `{ deckId }`. */
 export async function upsertDeckRow({ db, deck }) {
   const deckId = String(deck.ankiDeckId)
-  const now = Date.now()
-
-  await db
-    .prepare(
-      `INSERT INTO decks (id, anki_deck_id, name, card_count, imported_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (anki_deck_id) DO UPDATE SET
-         name = excluded.name,
-         card_count = excluded.card_count,
-         updated_at = excluded.updated_at`
-    )
-    .bind(deckId, deck.ankiDeckId, deck.name, deck.cardRows.length, now, now)
-    .run()
-
+  await decksRepo.upsert(db, { id: deckId, ankiDeckId: deck.ankiDeckId, name: deck.name, cardCount: deck.cardRows.length })
   return { deckId }
 }
 
@@ -65,36 +58,14 @@ export async function upsertCardChunk({ db, deckId, cards }) {
     const id = cardId(deckId, card.ankiNoteId)
     for (const filename of card.mediaFilenames) mediaNeeded.add(filename)
 
-    writes.push(
-      db
-        .prepare(
-          `INSERT INTO cards (id, deck_id, anki_note_id, front, back, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT (deck_id, anki_note_id) DO UPDATE SET
-             front = excluded.front,
-             back = excluded.back,
-             updated_at = excluded.updated_at`
-        )
-        .bind(id, deckId, card.ankiNoteId, card.front, card.back, now)
-    )
+    writes.push(cardsRepo.upsertStatement(db, { id, deckId, ankiNoteId: card.ankiNoteId, front: card.front, back: card.back, updatedAt: now }))
 
-    // Deleted by (deck_id, card_id) — NOT a prefix of the table's own PK
-    // (deck_id, filename, card_id), which skips `filename`. An earlier
-    // version of this comment assumed that was still a cheap, bounded scan;
-    // it verified out false against real D1 data (Cloudflare D1 dashboard,
-    // a production import of the real Kaishi.1.5k.v2.4.3.apkg deck): 716
-    // calls read 3.22M rows total, ~4,500 rows/call, growing as the deck's
-    // own card_media_refs rows accumulated during import — SQLite was
-    // scanning every row for the deck, not just this card's own handful.
-    // migrations/0010_add_card_media_refs_card_index.sql adds the
-    // (deck_id, card_id) index this actually needs.
-    writes.push(db.prepare(`DELETE FROM card_media_refs WHERE deck_id = ? AND card_id = ?`).bind(deckId, id))
+    // Stale refs for this card deleted first, then the current set inserted
+    // fresh — correctly handles a re-import where a card's template changed
+    // and it no longer references some filename it used to.
+    writes.push(cardMediaRefsRepo.deleteByCardIdStatement(db, deckId, id))
     for (const filename of card.mediaFilenames) {
-      writes.push(
-        db
-          .prepare(`INSERT INTO card_media_refs (deck_id, filename, card_id) VALUES (?, ?, ?)`)
-          .bind(deckId, filename, id)
-      )
+      writes.push(cardMediaRefsRepo.insertStatement(db, { deckId, filename, cardId: id }))
     }
   }
 

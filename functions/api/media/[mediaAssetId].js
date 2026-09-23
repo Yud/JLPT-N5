@@ -3,12 +3,11 @@
 // same Cloudflare Access gate as everything else — media is never served
 // from a public bucket/domain (specs/003-anki-deck-import, research.md §4).
 
+import * as mediaAssetsRepo from '../../../shared/repos/mediaAssetsRepo.js'
+
 export async function onRequestGet(context) {
   const { mediaAssetId } = context.params
-  const asset = await context.env.DB
-    .prepare('SELECT content_type FROM media_assets WHERE id = ?')
-    .bind(mediaAssetId)
-    .first()
+  const asset = await mediaAssetsRepo.getContentType(context.env.DB, mediaAssetId)
   if (!asset) return new Response('Not found', { status: 404 })
 
   const object = await context.env.MEDIA.get(mediaAssetId)

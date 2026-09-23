@@ -59,6 +59,8 @@ import { NonRetryableError } from 'cloudflare:workflows'
 import { extractDeckMetadata, renderCardChunk } from '../../../shared/data/ankiImport.js'
 import { upsertDeckRow, upsertCardChunk } from '../../../shared/server/deckImportProcessing.js'
 import { createMediaTasks, mediaTaskId } from '../../../shared/server/deckImportTasks.js'
+import * as deckImportJobsRepo from '../../../shared/repos/deckImportJobsRepo.js'
+import * as deckImportTasksRepo from '../../../shared/repos/deckImportTasksRepo.js'
 import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 import { R2ZipReader } from './r2ZipReader.js'
 
@@ -152,10 +154,7 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       const { decks, mediaEntryByFilename, notetypeCache } = await fetchAndExtractDeckMetadata({ mediaBucket, r2Key, jobId })
 
       await step.do('update-deck-total', async () => {
-        await db
-          .prepare(`UPDATE deck_import_jobs SET decks_total = ?, updated_at = ? WHERE id = ?`)
-          .bind(decks.length, Date.now(), jobId)
-          .run()
+        await deckImportJobsRepo.updateDecksTotal(db, { id: jobId, decksTotal: decks.length })
       })
 
       for (const deck of decks) {
@@ -188,10 +187,7 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
         // 'done' until every media task finishes; see completeMediaTask
         // (shared/server/deckImportTasks.js) for that finalization.
         await step.do(`deck-done-${deck.ankiDeckId}`, async () => {
-          await db
-            .prepare(`UPDATE deck_import_jobs SET decks_done = decks_done + 1, updated_at = ? WHERE id = ?`)
-            .bind(Date.now(), jobId)
-            .run()
+          await deckImportJobsRepo.incrementDecksDone(db, jobId)
         })
 
         const mediaNeededList = [...mediaNeeded]
@@ -252,13 +248,10 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       // (`WHERE status = 'processing'`), so this is a safe no-op if any
       // tasks do exist.
       await step.do('finalize-if-no-media', async () => {
-        const { total } = await db.prepare(`SELECT COUNT(*) AS total FROM deck_import_tasks WHERE job_id = ?`).bind(jobId).first()
+        const { total } = await deckImportTasksRepo.getCounts(db, jobId)
         if (total > 0) return
-        const result = await db
-          .prepare(`UPDATE deck_import_jobs SET status = 'done', updated_at = ? WHERE id = ? AND status = 'processing'`)
-          .bind(Date.now(), jobId)
-          .run()
-        if (result.meta.changes > 0) await mediaBucket.delete(r2Key).catch(() => {})
+        const changed = await deckImportJobsRepo.markDoneIfProcessing(db, jobId)
+        if (changed) await mediaBucket.delete(r2Key).catch(() => {})
       })
     } catch (err) {
       // Reached only once retries for a step are exhausted — record the
@@ -271,10 +264,7 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       // scattered is handled independently by completeMediaTask, since by
       // then this instance is no longer involved.
       await step.do('mark-error', async () => {
-        await db
-          .prepare(`UPDATE deck_import_jobs SET status = 'error', error = ?, updated_at = ? WHERE id = ?`)
-          .bind(String(err?.message ?? err), Date.now(), jobId)
-          .run()
+        await deckImportJobsRepo.markError(db, { id: jobId, error: String(err?.message ?? err) })
         await mediaBucket.delete(r2Key).catch(() => {})
       })
     }

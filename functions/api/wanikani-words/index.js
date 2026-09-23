@@ -4,10 +4,10 @@
 // populated by scripts/sync-wanikani-words.mjs run locally against your own
 // WaniKani account — this endpoint only ever reads it back.
 
+import * as wanikaniWordsRepo from '../../../shared/repos/wanikaniWordsRepo.js'
+
 export async function onRequestGet(context) {
-  const { results } = await context.env.DB
-    .prepare('SELECT subject_id, characters, meanings, readings, level, srs_stage, audio FROM wanikani_words')
-    .all()
+  const results = await wanikaniWordsRepo.list(context.env.DB)
 
   const words = results.map((row) => ({
     id: `wk-vocab-${row.subject_id}`,

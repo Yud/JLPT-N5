@@ -9,16 +9,13 @@
 // kicks off processing, and workflows/anki-import for the Workflow that does it.
 
 import { AwsClient } from 'aws4fetch'
+import * as deckImportJobsRepo from '../../../shared/repos/deckImportJobsRepo.js'
 
 export async function onRequestPost(context) {
   const jobId = crypto.randomUUID()
   const r2Key = `raw-imports/${jobId}.apkg`
 
-  const now = Date.now()
-  await context.env.DB
-    .prepare(`INSERT INTO deck_import_jobs (id, r2_key, status, created_at, updated_at) VALUES (?, ?, 'pending', ?, ?)`)
-    .bind(jobId, r2Key, now, now)
-    .run()
+  await deckImportJobsRepo.create(context.env.DB, { id: jobId, r2Key })
 
   const r2 = new AwsClient({ accessKeyId: context.env.R2_ACCESS_KEY_ID, secretAccessKey: context.env.R2_SECRET_ACCESS_KEY })
   const url = new URL(`https://${context.env.CF_ACCOUNT_ID}.r2.cloudflarestorage.com/hiragana-media/${r2Key}`)

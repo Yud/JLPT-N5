@@ -10,6 +10,9 @@
 
 import { DECKS } from '../../../shared/data/decks.js'
 import { buildStudyQueue } from '../../../shared/scheduling/studyQueue.js'
+import * as cardsRepo from '../../../shared/repos/cardsRepo.js'
+import * as cardSuspensionsRepo from '../../../shared/repos/cardSuspensionsRepo.js'
+import * as cardReviewStateRepo from '../../../shared/repos/cardReviewStateRepo.js'
 
 export async function onRequestGet(context) {
   const { email } = context.data
@@ -22,7 +25,7 @@ export async function onRequestGet(context) {
   if (isImported) {
     // Not a built-in deck — check whether it's an imported one
     // (specs/003-anki-deck-import) before giving up.
-    const { results } = await db.prepare('SELECT id, front, back FROM cards WHERE deck_id = ?').bind(deck).all()
+    const results = await cardsRepo.listByDeckId(db, deck)
     if (results.length === 0) return new Response(`Unknown deck: ${deck}`, { status: 404 })
     cardIds = new Set(results.map((row) => row.id))
     contentByCardId = new Map(results.map((row) => [row.id, { front: row.front, back: row.back }]))
@@ -32,12 +35,9 @@ export async function onRequestGet(context) {
   // unparameterized-by-id query rather than binding one placeholder per
   // card id — D1 caps bound parameters at 100 per query, well below a
   // deck's card count.
-  const [{ results: suspensions }, { results: reviewRows }] = await Promise.all([
-    db.prepare('SELECT card_id FROM card_suspensions WHERE user_email = ?').bind(email).all(),
-    db
-      .prepare('SELECT card_id, due_at, first_reviewed_at FROM card_review_state WHERE user_email = ?')
-      .bind(email)
-      .all(),
+  const [suspensions, reviewRows] = await Promise.all([
+    cardSuspensionsRepo.listCardIdsByUserEmail(db, email),
+    cardReviewStateRepo.listByUserEmail(db, email),
   ])
 
   const suspendedIds = new Set(suspensions.map((row) => row.card_id))

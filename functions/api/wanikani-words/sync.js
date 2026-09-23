@@ -5,9 +5,10 @@
 // it — runs entirely server-side, in this Worker; the WaniKani API key
 // (a Cloudflare Pages secret, see README) never reaches the browser.
 
+import * as wanikaniWordsRepo from '../../../shared/repos/wanikaniWordsRepo.js'
+
 const API_BASE = 'https://api.wanikani.com/v2'
 const MAX_SRS_STAGE = 9 // Burned
-const BATCH_SIZE = 100
 
 async function wkFetch(apiKey, url) {
   const res = await fetch(url, {
@@ -81,24 +82,7 @@ export async function onRequestPost(context) {
     return new Response(`WaniKani sync failed: ${err.message}`, { status: 502 })
   }
 
-  await context.env.DB.prepare('DELETE FROM wanikani_words').run()
-
-  const insertStatements = words.map((word) =>
-    context.env.DB.prepare(
-      'INSERT INTO wanikani_words (subject_id, characters, meanings, readings, level, srs_stage, audio) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).bind(
-      word.subjectId,
-      word.characters,
-      JSON.stringify(word.meanings),
-      JSON.stringify(word.readings),
-      word.level,
-      word.srsStage,
-      JSON.stringify(word.audio),
-    ),
-  )
-  for (const batch of chunk(insertStatements, BATCH_SIZE)) {
-    await context.env.DB.batch(batch)
-  }
+  await wanikaniWordsRepo.replaceAll(context.env.DB, words)
 
   return Response.json({ synced: words.length })
 }

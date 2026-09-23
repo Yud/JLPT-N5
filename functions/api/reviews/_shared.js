@@ -4,10 +4,11 @@
 // built-in card nor a row in the imported `cards` table.
 
 import { DECKS } from '../../../shared/data/decks.js'
+import * as cardsRepo from '../../../shared/repos/cardsRepo.js'
 
 const ALL_BUILTIN_CARD_IDS = new Set(Object.values(DECKS).flatMap((set) => [...set]))
 
 export async function isKnownCardId(db, cardId) {
   if (ALL_BUILTIN_CARD_IDS.has(cardId)) return true
-  return Boolean(await db.prepare('SELECT 1 FROM cards WHERE id = ?').bind(cardId).first())
+  return cardsRepo.exists(db, cardId)
 }

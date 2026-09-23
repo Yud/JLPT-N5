@@ -4,12 +4,15 @@
 // front/back already have media references resolved to /api/media/... URLs
 // (rewritten at upload time by [deckId]/media.js).
 
+import * as decksRepo from '../../../../shared/repos/decksRepo.js'
+import * as cardsRepo from '../../../../shared/repos/cardsRepo.js'
+
 export async function onRequestGet(context) {
   const { deckId } = context.params
   const db = context.env.DB
-  const deck = await db.prepare('SELECT id FROM decks WHERE id = ?').bind(deckId).first()
+  const deck = await decksRepo.getById(db, deckId)
   if (!deck) return new Response(`Unknown deck: ${deckId}`, { status: 404 })
 
-  const { results } = await db.prepare('SELECT id, front, back FROM cards WHERE deck_id = ?').bind(deckId).all()
+  const results = await cardsRepo.listByDeckId(db, deckId)
   return Response.json({ cards: results })
 }

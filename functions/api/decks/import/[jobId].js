@@ -12,15 +12,16 @@
 // (by the last task to finish) or 'error' (by the scatter phase, or by any
 // task that fails), so that part of the contract is unchanged.
 
+import * as deckImportJobsRepo from '../../../../shared/repos/deckImportJobsRepo.js'
+import * as deckImportTasksRepo from '../../../../shared/repos/deckImportTasksRepo.js'
+
 export async function onRequestGet(context) {
   const { jobId } = context.params
-  const job = await context.env.DB.prepare('SELECT * FROM deck_import_jobs WHERE id = ?').bind(jobId).first()
+  const db = context.env.DB
+  const job = await deckImportJobsRepo.getById(db, jobId)
   if (!job) return new Response(`Unknown job: ${jobId}`, { status: 404 })
 
-  const taskCounts = await context.env.DB
-    .prepare(`SELECT COUNT(*) AS total, SUM(status = 'done') AS done FROM deck_import_tasks WHERE job_id = ?`)
-    .bind(jobId)
-    .first()
+  const taskCounts = await deckImportTasksRepo.getCounts(db, jobId)
 
   return Response.json({
     id: job.id,
