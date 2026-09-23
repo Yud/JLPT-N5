@@ -42,7 +42,7 @@
 
 <script setup>
 import { useWritingExercise } from '../composables/useWritingExercise.js'
-import { WORDS } from '../data/words.js'
+import { WORDS } from '../../shared/data/words.js'
 import CharacterButton from './CharacterButton.vue'
 import AppButton from './AppButton.vue'
 

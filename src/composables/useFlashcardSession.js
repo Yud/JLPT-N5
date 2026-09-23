@@ -1,4 +1,4 @@
-import { getCharactersForGroup } from '../data/kana.js'
+import { getCharactersForGroup } from '../../shared/data/kana.js'
 import { useCardSession } from './useCardSession.js'
 
 /**

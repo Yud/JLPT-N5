@@ -29,15 +29,15 @@
 // the Workflows engine itself (e.g. instance status polling) — completion
 // is tracked in D1 instead (deck_import_tasks), which is simpler to reason
 // about and is what the GET /api/decks/import/:jobId endpoint already reads
-// from. See completeMediaTask (src/server/deckImportTasks.js) for exactly
+// from. See completeMediaTask (shared/server/deckImportTasks.js) for exactly
 // how a chunk finishing (successfully or not) updates its own row and, for
 // the last chunk to finish, finalizes the whole job (deleting the raw
 // upload).
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
-import { decompressMediaFiles } from '../../../src/data/ankiImport.js'
-import { processMediaChunk } from '../../../src/server/mediaImportProcessing.js'
-import { completeMediaTask } from '../../../src/server/deckImportTasks.js'
+import { decompressMediaFiles } from '../../../shared/data/ankiImport.js'
+import { processMediaChunk } from '../../../shared/server/mediaImportProcessing.js'
+import { completeMediaTask } from '../../../shared/server/deckImportTasks.js'
 import { R2ZipReader } from './r2ZipReader.js'
 
 export class MediaChunkWorkflow extends WorkflowEntrypoint {

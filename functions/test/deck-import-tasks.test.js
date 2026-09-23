@@ -1,12 +1,12 @@
 // Unit tests for the D1 task-tracking helpers each MediaChunkWorkflow
-// instance uses on its way out (src/server/deckImportTasks.js) — direct
+// instance uses on its way out (shared/server/deckImportTasks.js) — direct
 // coverage of the finalization logic (last-task-finishes flips the job to
 // 'done'; any task erroring fails the job; a task finishing after the job
 // already errored doesn't stomp on it), which the happy-path end-to-end test
 // (decks-import-workflow.test.js, a single-media-file deck) never exercises.
 import { env } from 'cloudflare:workers'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { completeMediaTask, createMediaTasks, mediaTaskId } from '../../src/server/deckImportTasks.js'
+import { completeMediaTask, createMediaTasks, mediaTaskId } from '../../shared/server/deckImportTasks.js'
 
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM deck_import_jobs')

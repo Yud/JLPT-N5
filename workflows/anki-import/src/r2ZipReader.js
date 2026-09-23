@@ -1,4 +1,4 @@
-// Adapts an R2Bucket + key to the `Reader` interface src/data/zipRangeReader.js
+// Adapts an R2Bucket + key to the `Reader` interface shared/data/zipRangeReader.js
 // expects (getLength(): Promise<number>, read(offset, length):
 // Promise<Uint8Array>) — see ANKI-IMPORT-RANGE-READ-PLAN.md (repo root) for
 // why: this lets that module locate the central directory and decompress

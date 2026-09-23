@@ -86,7 +86,7 @@
 <script setup>
 import { shallowRef, reactive, computed, onActivated } from 'vue'
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router'
-import { getPracticeGroups } from '../data/katakana.js'
+import { getPracticeGroups } from '../../shared/data/katakana.js'
 import { useKatakanaFlashcardSession } from '../composables/useKatakanaFlashcardSession.js'
 import AppButton from './AppButton.vue'
 

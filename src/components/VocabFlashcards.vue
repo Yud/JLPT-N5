@@ -101,7 +101,7 @@
 <script setup>
 import { shallowRef, reactive, computed, onActivated } from 'vue'
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router'
-import { getVocabCategories } from '../data/words.js'
+import { getVocabCategories } from '../../shared/data/words.js'
 import { useVocabFlashcardSession } from '../composables/useVocabFlashcardSession.js'
 import { useSpeech } from '../composables/useSpeech.js'
 import AppButton from './AppButton.vue'

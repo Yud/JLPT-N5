@@ -11,7 +11,7 @@
 
 <script setup>
 import VocabCard from './VocabCard.vue'
-import { getVocabCategories, getWordsForCategory } from '../data/words.js'
+import { getVocabCategories, getWordsForCategory } from '../../shared/data/words.js'
 
 const categories = getVocabCategories().filter((c) => c.kind !== 'all')
 </script>

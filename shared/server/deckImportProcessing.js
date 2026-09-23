@@ -9,7 +9,7 @@
 //
 // Split into two functions, not one combined upsert, because card rendering
 // itself is now chunked across many Workflow steps (see
-// src/data/ankiImport.js's renderCardChunk) — the deck row (and its
+// shared/data/ankiImport.js's renderCardChunk) — the deck row (and its
 // card_count, known upfront from the raw card-row count before any rendering
 // happens) can be written once, before any card is rendered, while cards
 // trickle in a chunk at a time from separate steps.

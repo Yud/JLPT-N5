@@ -82,7 +82,7 @@ export const routes = [
   // like Text to Speech, not nested under an existing one. /decks/:deckId
   // has no nav entry of its own (reached by clicking a deck in the manager),
   // same convention as the :scope sub-routes above. Lazy-loaded: the
-  // zip/SQLite/zstd parsing stack (src/data/ankiImport.js) is only needed by
+  // zip/SQLite/zstd parsing stack (shared/data/ankiImport.js) is only needed by
   // visitors who actually use this pillar, and is heavy enough (fflate,
   // sql.js's wasm, fzstd) to keep out of everyone else's initial bundle.
   { path: '/decks', name: 'decks', component: () => import('./components/DeckManager.vue'), meta: { label: 'Decks' } },

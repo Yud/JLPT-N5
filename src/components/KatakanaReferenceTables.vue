@@ -8,5 +8,5 @@
 
 <script setup>
 import KanaTable from './KanaTable.vue'
-import { TABLE_LAYOUTS } from '../data/katakana.js'
+import { TABLE_LAYOUTS } from '../../shared/data/katakana.js'
 </script>

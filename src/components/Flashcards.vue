@@ -86,7 +86,7 @@
 <script setup>
 import { shallowRef, reactive, computed, onActivated } from 'vue'
 import { useRoute, useRouter, onBeforeRouteUpdate } from 'vue-router'
-import { getPracticeGroups } from '../data/kana.js'
+import { getPracticeGroups } from '../../shared/data/kana.js'
 import { useFlashcardSession } from '../composables/useFlashcardSession.js'
 import AppButton from './AppButton.vue'
 

@@ -8,5 +8,5 @@
 
 <script setup>
 import CounterTable from './CounterTable.vue'
-import { DAY_COUNTERS, THING_COUNTERS, PEOPLE_COUNTERS } from '../data/kanji.js'
+import { DAY_COUNTERS, THING_COUNTERS, PEOPLE_COUNTERS } from '../../shared/data/kanji.js'
 </script>

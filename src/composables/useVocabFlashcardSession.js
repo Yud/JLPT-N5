@@ -1,4 +1,4 @@
-import { getWordsForCategory } from '../data/words.js'
+import { getWordsForCategory } from '../../shared/data/words.js'
 import { useCardSession } from './useCardSession.js'
 
 /**

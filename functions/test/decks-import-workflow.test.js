@@ -5,7 +5,7 @@
 // and waits for the job to actually finish. Uses a minimal legacy-format
 // fixture (plain SQLite, plain JSON media manifest, uncompressed media) —
 // zstd/protobuf format-variant correctness is already covered by
-// src/data/ankiImport.test.js; this test's job is verifying the Workflow's
+// shared/data/ankiImport.test.js; this test's job is verifying the Workflow's
 // own wiring (steps, job-row progress tracking, R2 writes, card rewriting).
 import { env, exports } from 'cloudflare:workers'
 import JSZip from 'jszip'

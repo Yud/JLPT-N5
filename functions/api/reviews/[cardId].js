@@ -1,8 +1,8 @@
 // POST /api/reviews/:cardId  { grade: 'again' | 'hard' | 'good' | 'easy' }
 // Scores one review and upserts the new schedule. Scheduling math lives in
-// src/scheduling/scheduler.js so it's unit-testable without D1.
+// shared/scheduling/scheduler.js so it's unit-testable without D1.
 
-import { nextReviewState } from '../../../src/scheduling/scheduler.js'
+import { nextReviewState } from '../../../shared/scheduling/scheduler.js'
 import { isKnownCardId } from './_shared.js'
 
 const GRADES = new Set(['again', 'hard', 'good', 'easy'])
@@ -27,7 +27,7 @@ export async function onRequestPost(context) {
   const next = nextReviewState(existing, body.grade)
   // Write-once: set on insert, left out of the upsert's DO UPDATE SET below
   // so a second/third review never overwrites it — the daily new-card cap
-  // (src/scheduling/studyQueue.js) needs this card's *first* review time,
+  // (shared/scheduling/studyQueue.js) needs this card's *first* review time,
   // which last_reviewed_at can't answer once it's been reviewed again.
   const firstReviewedAt = existing?.first_reviewed_at ?? next.last_reviewed_at
 

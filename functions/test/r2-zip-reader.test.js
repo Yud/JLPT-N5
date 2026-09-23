@@ -1,14 +1,14 @@
 // Verifies R2ZipReader (workflows/anki-import/src/r2ZipReader.js) against a
 // REAL R2 binding under the real Workers runtime (env.MEDIA, via
 // @cloudflare/vitest-pool-workers), driven through the actual production
-// zip parser (src/data/zipRangeReader.js) — not a mock of either. This is
+// zip parser (shared/data/zipRangeReader.js) — not a mock of either. This is
 // the "does the Reader interface the parser expects actually work against
 // R2's range-GET API" check from ANKI-IMPORT-RANGE-READ-PLAN.md step 2,
 // kept as a standing regression test rather than a one-off script.
 import { env } from 'cloudflare:workers'
 import JSZip from 'jszip'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { readCentralDirectory, readZipEntryData } from '../../src/data/zipRangeReader.js'
+import { readCentralDirectory, readZipEntryData } from '../../shared/data/zipRangeReader.js'
 import { R2ZipReader } from '../../workflows/anki-import/src/r2ZipReader.js'
 
 const KEY = 'test/r2-zip-reader-fixture.zip'

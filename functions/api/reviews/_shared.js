@@ -3,7 +3,7 @@
 // [cardId]/suspend.js, which both need to reject an id that's neither a
 // built-in card nor a row in the imported `cards` table.
 
-import { DECKS } from '../../../src/data/decks.js'
+import { DECKS } from '../../../shared/data/decks.js'
 
 const ALL_BUILTIN_CARD_IDS = new Set(Object.values(DECKS).flatMap((set) => [...set]))
 

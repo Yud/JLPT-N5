@@ -35,7 +35,7 @@
 // could share one isolate's 128MB budget. `readCentralDirectory` (this
 // file's scatter phase, via extractDeckMetadata) and `readZipEntryData`
 // (MediaChunkWorkflow, via decompressMediaFile(s)) — both in
-// src/data/zipRangeReader.js — range-read only the specific bytes each
+// shared/data/zipRangeReader.js — range-read only the specific bytes each
 // needs from R2 (workflows/anki-import/src/r2ZipReader.js), so this holds
 // even when many instances share an isolate. This also means the R2-staging
 // tier an earlier version of this file had (packMediaChunk/
@@ -56,9 +56,9 @@
 
 import { WorkflowEntrypoint } from 'cloudflare:workers'
 import { NonRetryableError } from 'cloudflare:workflows'
-import { extractDeckMetadata, renderCardChunk } from '../../../src/data/ankiImport.js'
-import { upsertDeckRow, upsertCardChunk } from '../../../src/server/deckImportProcessing.js'
-import { createMediaTasks, mediaTaskId } from '../../../src/server/deckImportTasks.js'
+import { extractDeckMetadata, renderCardChunk } from '../../../shared/data/ankiImport.js'
+import { upsertDeckRow, upsertCardChunk } from '../../../shared/server/deckImportProcessing.js'
+import { createMediaTasks, mediaTaskId } from '../../../shared/server/deckImportTasks.js'
 import { loadSqlJsForWorkflow } from './loadSqlJs.js'
 import { R2ZipReader } from './r2ZipReader.js'
 
@@ -134,7 +134,7 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
 
     try {
       // Plain code, NOT step.do() — a parsed deck's raw card rows (unrendered
-      // — see src/data/ankiImport.js's module header comment for why
+      // — see shared/data/ankiImport.js's module header comment for why
       // rendering is deferred to chunked steps below) stay well under
       // Workflows' 1 MiB per-step-result cap regardless of deck size, and
       // step results are memoized by name: on a resumed execution, an
@@ -145,7 +145,7 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
       // re-parses. See fetchAndExtractDeckMetadata's own doc comment for why
       // it's a separate function rather than inlined here. Also safely under
       // budget on its own: central-directory parsing (readCentralDirectory,
-      // src/data/zipRangeReader.js) measured at 3.08ms against the real
+      // shared/data/zipRangeReader.js) measured at 3.08ms against the real
       // fixture's 4,358 entries — see ANKI-IMPORT-RANGE-READ-PLAN.md for why
       // that number, not unzipit's own 21.2ms for the same parse, is what
       // this relies on.
@@ -186,7 +186,7 @@ export class DeckImportWorkflow extends WorkflowEntrypoint {
         // mediaTotal, sourced from deck_import_tasks — see the GET
         // /api/decks/import/:jobId endpoint). The job as a whole isn't
         // 'done' until every media task finishes; see completeMediaTask
-        // (src/server/deckImportTasks.js) for that finalization.
+        // (shared/server/deckImportTasks.js) for that finalization.
         await step.do(`deck-done-${deck.ankiDeckId}`, async () => {
           await db
             .prepare(`UPDATE deck_import_jobs SET decks_done = decks_done + 1, updated_at = ? WHERE id = ?`)

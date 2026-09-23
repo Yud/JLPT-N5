@@ -1,8 +1,8 @@
 // GET /api/decks
-// Lists every deck — built-in (defined in src/data/decks.js) and imported
+// Lists every deck — built-in (defined in shared/data/decks.js) and imported
 // (the decks table) — each with a name and card count (FR-008).
 
-import { DECK_NAMES, DECKS } from '../../../src/data/decks.js'
+import { DECK_NAMES, DECKS } from '../../../shared/data/decks.js'
 
 function displayName(id) {
   return id.charAt(0).toUpperCase() + id.slice(1)

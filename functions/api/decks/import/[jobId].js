@@ -7,7 +7,7 @@
 // mediaTotal/mediaDone come from deck_import_tasks, not from columns on
 // deck_import_jobs — each media chunk is now its own MediaChunkWorkflow
 // instance that marks its own task row done/error on the way out (see
-// src/server/deckImportTasks.js), rather than one Workflow instance updating
+// shared/server/deckImportTasks.js), rather than one Workflow instance updating
 // a running counter itself. The job row's own status still flips to 'done'
 // (by the last task to finish) or 'error' (by the scatter phase, or by any
 // task that fails), so that part of the contract is unchanged.

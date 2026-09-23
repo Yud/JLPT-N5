@@ -5,13 +5,13 @@
 // written in kana only — no null-check needed at render time), an English
 // `meaning`, and a thematic `category`.
 //
-// Every glyph in `kana` must exist in KANA (src/data/kana.js) — enforced by
+// Every glyph in `kana` must exist in KANA (shared/data/kana.js) — enforced by
 // words.test.js. KANA has no small-っ (sokuon) entry, so words requiring one
 // (e.g. がっこう) are deliberately excluded from this list for now.
 //
 // `id` follows the same permanent, explicit convention as kana.js's card
 // ids (`vocab-<romaji>`) — never recomputed from other fields, since it's
-// what spaced-repetition review state is keyed on (see src/data/decks.js).
+// what spaced-repetition review state is keyed on (see shared/data/decks.js).
 // A few words are true homophones with unrelated kanji (e.g. はな "flower"
 // 花 vs はな "nose" 鼻); those get a disambiguated id suffix since `romaji`
 // alone isn't required to be unique, but `id` must be.

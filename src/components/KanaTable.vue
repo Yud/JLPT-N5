@@ -66,7 +66,7 @@
 
 <script setup>
 import { useSpeech } from '../composables/useSpeech.js'
-import { PHONETIC_NOTES } from '../data/phonetics.js'
+import { PHONETIC_NOTES } from '../../shared/data/phonetics.js'
 
 defineProps({
   title: { type: String, required: true },

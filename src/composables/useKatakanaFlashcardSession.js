@@ -1,4 +1,4 @@
-import { getCharactersForGroup } from '../data/katakana.js'
+import { getCharactersForGroup } from '../../shared/data/katakana.js'
 import { useCardSession } from './useCardSession.js'
 
 /**

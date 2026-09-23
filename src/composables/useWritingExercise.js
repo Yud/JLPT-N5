@@ -1,5 +1,5 @@
 import { ref } from 'vue'
-import { KANA } from '../data/kana.js'
+import { KANA } from '../../shared/data/kana.js'
 
 // Standard Fisher–Yates shuffle (unbiased, unlike `sort(() => Math.random() - 0.5)`).
 function shuffle(items) {

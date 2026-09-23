@@ -1,4 +1,4 @@
-// Unit tests for src/server/deckImportProcessing.js — specifically
+// Unit tests for shared/server/deckImportProcessing.js — specifically
 // upsertCardChunk's card_media_refs bookkeeping (see migrations/
 // 0009_create_card_media_refs.sql), which the end-to-end Workflow test
 // (decks-import-workflow.test.js) exercises only in the simple/no-re-import
@@ -9,7 +9,7 @@
 // apply here, since this table drives the lookup, not a text search).
 import { env } from 'cloudflare:workers'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { upsertCardChunk, upsertDeckRow } from '../../src/server/deckImportProcessing.js'
+import { upsertCardChunk, upsertDeckRow } from '../../shared/server/deckImportProcessing.js'
 
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM decks')

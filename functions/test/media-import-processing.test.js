@@ -1,11 +1,11 @@
 // Unit tests for the per-chunk logic the DeckImportWorkflow (workflows/anki-import)
-// runs per media chunk step — extracted into src/server/mediaImportProcessing.js
+// runs per media chunk step — extracted into shared/server/mediaImportProcessing.js
 // specifically so it's testable here, directly, without needing a live
-// Workflow runtime (mirrors how src/scheduling/scheduler.js is tested apart
+// Workflow runtime (mirrors how shared/scheduling/scheduler.js is tested apart
 // from its endpoint).
 import { env } from 'cloudflare:workers'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { processMediaChunk } from '../../src/server/mediaImportProcessing.js'
+import { processMediaChunk } from '../../shared/server/mediaImportProcessing.js'
 
 beforeEach(async () => {
   await env.DB.exec('DELETE FROM decks')

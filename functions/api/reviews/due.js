@@ -2,14 +2,14 @@
 // Returns `cards`: every non-suspended card in the deck with its review
 // status, and `queue`: the subset actually worth studying right now (every
 // due card, uncapped, plus new cards up to today's remaining new-card
-// budget — src/scheduling/studyQueue.js). Card content (front/back) is
+// budget — shared/scheduling/studyQueue.js). Card content (front/back) is
 // included on `queue` entries only, and only for imported decks — built-in
-// decks' content (kana/romaji/etc.) already lives in code (src/data/*.js)
+// decks' content (kana/romaji/etc.) already lives in code (shared/data/*.js)
 // and the client has it, so duplicating it here would balloon the response
 // for no reason.
 
-import { DECKS } from '../../../src/data/decks.js'
-import { buildStudyQueue } from '../../../src/scheduling/studyQueue.js'
+import { DECKS } from '../../../shared/data/decks.js'
+import { buildStudyQueue } from '../../../shared/scheduling/studyQueue.js'
 
 export async function onRequestGet(context) {
   const { email } = context.data

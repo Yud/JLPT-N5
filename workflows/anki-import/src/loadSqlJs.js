@@ -1,5 +1,5 @@
 // sql.js WASM loading for the Workflow (workerd) runtime. Cannot reuse
-// src/data/ankiImport.js's Node-path loader (`node:fs` isn't meaningful for a
+// shared/data/ankiImport.js's Node-path loader (`node:fs` isn't meaningful for a
 // deployed Worker's bundle) or fetch bytes at runtime and dynamically
 // instantiate them (Workers/Workflows disallow dynamic wasm compilation —
 // `WebAssembly.instantiate()` only accepts a precompiled Module there, the
