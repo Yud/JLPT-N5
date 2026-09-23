@@ -9,7 +9,7 @@ const FISH_API_URL = 'https://api.fish.audio/v1/tts'
 // A generic Japanese voice from Fish Audio's Voice Library — not a secret,
 // so it's the fallback whenever FISH_VOICE_REFERENCE_ID isn't set (also the
 // literal value in .github/prod.template.yaml).
-const DEFAULT_VOICE_REFERENCE_ID = 'a365c3050dd04026a81291145e017d6f'
+const DEFAULT_VOICE_REFERENCE_ID = '297a6fd278df47c3b9da9bfdf55ac89a'
 
 export async function onRequestPost(context) {
   const apiKey = context.env.FISH_API_KEY
