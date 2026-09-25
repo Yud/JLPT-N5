@@ -9,7 +9,7 @@ import VocabFlashcards from './components/VocabFlashcards.vue'
 import KanjiReferenceTables from './components/KanjiReferenceTables.vue'
 import ListeningQuiz from './components/ListeningQuiz.vue'
 import TextToSpeech from './components/TextToSpeech.vue'
-import WanikaniLevel from './components/WanikaniLevel.vue'
+import WanikaniSrs from './components/WanikaniSrs.vue'
 
 // meta.group clusters routes into one nav dropdown per pillar (Hiragana /
 // Katakana / Vocabulary), so adding a same-shaped pillar later is just more
@@ -76,14 +76,15 @@ export const routes = [
     component: ListeningQuiz,
     meta: { group: 'Kanji', label: 'Listening Quiz' },
   },
-  // One WaniKani level's radicals/kanji/vocab and when each is next up for
-  // review, fetched live (functions/api/wanikani/level.js). :level is
-  // optional — omitted, it shows your current WaniKani level.
+  // Every WaniKani item at one SRS stage (Apprentice I … Burned), across all
+  // levels, and when each is next up for review — fetched live
+  // (functions/api/wanikani/srs-items.js). :stage is the numeric SRS stage
+  // (0 = lessons … 9 = burned); omitted, the page shows just the picker.
   {
-    path: '/wanikani-levels/:level?',
-    name: 'wanikani-levels',
-    component: WanikaniLevel,
-    meta: { group: 'Kanji', label: 'WaniKani Levels' },
+    path: '/wanikani-srs/:stage?',
+    name: 'wanikani-srs',
+    component: WanikaniSrs,
+    meta: { group: 'Kanji', label: 'WaniKani SRS' },
   },
   // No group — a standalone tool, not tied to any one pillar, so it gets
   // its own flat top-level nav item instead of living in a dropdown.
