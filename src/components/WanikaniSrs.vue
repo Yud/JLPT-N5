@@ -26,6 +26,8 @@
         </label>
 
         <AppButton :disabled="status === 'loading'" @click="reload">🔄 Refresh</AppButton>
+
+        <USwitch v-model="showAll" label="Show meanings & readings" />
       </div>
 
       <p v-if="status === 'error'" class="text-sm text-red-600 dark:text-red-400">{{ error }}</p>
@@ -69,8 +71,24 @@
                   <template v-else>{{ item.characters }}</template>
                 </span>
               </td>
-              <td class="border border-border p-2">{{ item.meaning }}</td>
-              <td class="border border-border p-2">{{ item.reading ?? '—' }}</td>
+              <td class="border border-border p-2">
+                <MaskedText
+                  :text="item.meaning"
+                  label="meaning"
+                  :visible="isVisible(item, 'meaning')"
+                  @toggle="toggleField(item, 'meaning')"
+                />
+              </td>
+              <td class="border border-border p-2">
+                <MaskedText
+                  v-if="item.reading"
+                  :text="item.reading"
+                  label="reading"
+                  :visible="isVisible(item, 'reading')"
+                  @toggle="toggleField(item, 'reading')"
+                />
+                <template v-else>—</template>
+              </td>
               <td class="border border-border p-2 text-center">{{ item.level }}</td>
               <td class="border border-border p-2 text-sm" :title="item.availableAt ? absoluteTime(item.availableAt) : ''">
                 <template v-if="item.availableAt">
@@ -97,6 +115,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { sortItems, useWanikaniSrsItems } from '../composables/useWanikaniSrsItems.js'
 import AppButton from './AppButton.vue'
+import MaskedText from './MaskedText.vue'
 
 const SRS_STAGE_NAMES = [
   'Lessons',
@@ -144,6 +163,34 @@ const summary = computed(() => {
   const last = Math.min(page.value * PAGE_SIZE, items.value.length)
   return `${items.value.length} items · ${dueNow} available for review now · showing ${first}–${last}`
 })
+
+// Meanings and readings start hidden, so the list can double as a
+// self-quiz. A cell is visible when the page-wide switch is on, unless
+// that cell has been individually flipped — `flipped` holds those
+// per-cell exceptions, keyed "<subjectId>:<field>". Flipping the switch
+// clears them, so it always sets every cell to the same state.
+const showAll = ref(false)
+const flipped = ref(new Set())
+
+watch(showAll, () => {
+  flipped.value = new Set()
+})
+
+function fieldKey(item, field) {
+  return `${item.subjectId}:${field}`
+}
+
+function isVisible(item, field) {
+  return showAll.value !== flipped.value.has(fieldKey(item, field))
+}
+
+function toggleField(item, field) {
+  const key = fieldKey(item, field)
+  const next = new Set(flipped.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  flipped.value = next
+}
 
 function selectStage(n) {
   router.push({ name: 'wanikani-srs', params: { stage: n } })
